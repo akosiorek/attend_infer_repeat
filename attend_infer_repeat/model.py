@@ -3,6 +3,11 @@ import tensorflow as tf
 import sonnet as snt
 
 
+default_init = {
+    'w': tf.uniform_unit_scaling_initializer(),
+    'b': tf.truncated_normal_initializer(stddev=1e-2)}
+
+
 class TransformParam(snt.AbstractModule):
 
     def __init__(self, n_param):
@@ -12,8 +17,11 @@ class TransformParam(snt.AbstractModule):
     def _build(self, inpt):
 
         flat = snt.BatchFlatten()
-        linear = snt.Linear(self._n_param)
-        return linear(flat(inpt))
+        linear1 = snt.Linear(20, initializers=default_init)
+        linear2 = snt.Linear(self._n_param, initializers=default_init)
+        seq = snt.Sequential([flat, linear1, tf.nn.elu, linear2])
+
+        return seq(inpt) + np.asarray([1, 0, 1, 0], dtype=np.float32).reshape((1, 4))
 
 
 class ConvEncoder(snt.AbstractModule):
@@ -25,8 +33,8 @@ class ConvEncoder(snt.AbstractModule):
         if len(inpt.get_shape().as_list()) == 3:
             inpt = inpt[..., tf.newaxis]
 
-        conv1 = snt.Conv2D(32, (3, 3), 2)
-        conv2 = snt.Conv2D(32, (3, 3), 2)
+        conv1 = snt.Conv2D(32, (3, 3), 2, initializers=default_init)
+        conv2 = snt.Conv2D(32, (3, 3), 2, initializers=default_init)
         seq = snt.Sequential((conv1, tf.nn.elu, conv2, tf.nn.elu))
         return seq(inpt)
 
@@ -39,8 +47,8 @@ class Encoder(snt.AbstractModule):
 
     def _build(self, inpt):
         flat = snt.BatchFlatten()
-        linear1 = snt.Linear(100)
-        linear2 = snt.Linear(self._n_latent)
+        linear1 = snt.Linear(100, initializers=default_init)
+        linear2 = snt.Linear(self._n_latent, initializers=default_init)
         seq = snt.Sequential([flat, linear1, tf.nn.elu, linear2, tf.nn.elu])
         return seq(inpt)
 
@@ -53,8 +61,8 @@ class Decoder(snt.AbstractModule):
 
     def _build(self, inpt):
         n = np.prod(self._output_size)
-        linear1 = snt.Linear(100)
-        linear2 = snt.Linear(n)
+        linear1 = snt.Linear(100, initializers=default_init)
+        linear2 = snt.Linear(n, initializers=default_init)
         reshape = snt.BatchReshape(self._output_size)
         seq = snt.Sequential([linear1, tf.nn.elu, linear2, reshape])
         return seq(inpt)
@@ -88,6 +96,7 @@ class AIRCell(snt.RNNCore):
         self._crop_size = crop_size
         self._n_latent = n_latent
         self._transition = transition
+        self._n_hidden = self._transition.output_size[0]
 
         with self._enter_variable_scope():
 
@@ -111,7 +120,7 @@ class AIRCell(snt.RNNCore):
             self._n_latent,                 # what
             self._n_transform_param,        # where
             self._transition.state_size,    # hidden state of the rnn
-            1,                              # presence logit
+            1,                              # presence
         ]
 
     @property
@@ -122,39 +131,43 @@ class AIRCell(snt.RNNCore):
         batch_size = img.get_shape().as_list()[0]
         hidden_state = self._transition.initial_state(batch_size, tf.float32, trainable=True)
 
-        # where_code = np.asarray([1, 0, 1, 0], dtype=np.float32).reshape((1, 4))
-        # where_code = tf.get_variable('where_init', initializer=where_code, dtype=tf.float32)
-
         where_code = tf.get_variable('where_init', shape=[1, self._n_transform_param], dtype=tf.float32)
 
         what_code = tf.get_variable('what_init', shape=[1, self._n_latent], dtype=tf.float32)
+
         flat_canvas = tf.reshape(self._canvas(), (1, self._n_pix))
+        # flat_canvas = tf.zeros((1, self._n_pix), dtype=tf.float32)
+
         where_code, what_code, flat_canvas = (tf.tile(i, (batch_size, 1)) for i in (where_code, what_code, flat_canvas))
 
         flat_img = tf.reshape(img, (batch_size, self._n_pix))
-        flat_canvas = tf.tile(tf.reshape(self._canvas(), (1, self._n_pix)), (batch_size, 1))
-        init_presence = tf.convert_to_tensor(np.ones((batch_size, 1), dtype=np.float32) * 1e3)
+        init_presence = tf.convert_to_tensor(np.ones((batch_size, 1), dtype=np.float32))
         return [flat_img, flat_canvas, what_code, where_code, hidden_state, init_presence]
 
     def _build(self, inpt, state):
 
-        img_flat, canvas_flat, what_code, where_code, hidden_state, presence_logit = state
+        img_flat, canvas_flat, what_code, where_code, hidden_state, presence = state
         img = tf.reshape(img_flat, (-1,) + tuple(self._img_size))
 
-        inpt_encoding = self._conv_encoder(img)
+        # inpt_encoding = self._conv_encoder(img)
+        inpt_encoding = img
         inpt_encoding = self._input_encoder(inpt_encoding)
 
-        rnn_inpt = tf.concat((inpt_encoding, what_code, where_code), -1)
-        rnn_inpt = snt.Linear(self._transition.output_size[0])(rnn_inpt)
+        rnn_inpt = tf.concat((inpt_encoding, what_code, where_code, presence), -1)
+        rnn_inpt = snt.Linear(self._n_hidden, initializers=default_init)(rnn_inpt)
+        rnn_inpt = tf.nn.elu(rnn_inpt)
         hidden_output, hidden_state = self._transition(rnn_inpt, hidden_state)
 
         where_code = self._transform_param(hidden_output)
         cropped = self._spatial_transformer(img, where_code)
 
-        presence_inpt = tf.concat([hidden_output, tf.nn.sigmoid(presence_logit)], -1)
-        presence_logit = snt.Linear(1)(presence_inpt)
+        presence_model = snt.Linear(self._n_latent, initializers=default_init), tf.nn.elu, snt.Linear(1, initializers=default_init)
+        presence_model = snt.Sequential(presence_model)
+        presence_logit = presence_model(hidden_output)# + 1e3
+        presence = tf.nn.sigmoid(presence_logit)
 
-        what_code = self._conv_encoder(cropped)
+        # what_code = self._conv_encoder(cropped)
+        what_code = cropped
         what_code = self._encoder(what_code)
 
         decoded = self._decoder(what_code)
@@ -162,10 +175,11 @@ class AIRCell(snt.RNNCore):
 
         inversed_flat = tf.reshape(inversed, (-1, self._n_pix))
 
-        canvas_flat = canvas_flat + tf.nn.sigmoid(presence_logit) * inversed_flat
+        canvas_flat = canvas_flat + presence * inversed_flat
         decoded_flat = tf.reshape(decoded, (-1, np.prod(self._crop_size)))
+
         output = [canvas_flat, decoded_flat, what_code, where_code, presence_logit]
-        state = [img_flat, canvas_flat, what_code, where_code, hidden_state, presence_logit]
+        state = [img_flat, canvas_flat, what_code, where_code, hidden_state, presence]
         return output, state
 
 

@@ -10,7 +10,7 @@ _MNIST_PATH = os.path.join(os.path.dirname(__file__), 'MNIST_data')
 
 
 def create_mnist(parition='train', canvas_size=(50, 50), obj_size=(20, 20), n_objects=(0, 2), n_samples=None,
-             dtype=np.uint8):
+             dtype=np.uint8, expand_nums=True):
 
     mnist = input_data.read_data_sets(_MNIST_PATH, one_hot=False)
     mnist_data = getattr(mnist, parition)
@@ -21,10 +21,11 @@ def create_mnist(parition='train', canvas_size=(50, 50), obj_size=(20, 20), n_ob
 
     n_objects = nest.flatten(n_objects)
     n_objects.sort()
+    max_objects = n_objects[-1]
 
     imgs = np.zeros((n_samples,) + tuple(canvas_size), dtype=dtype)
     labels = np.zeros((n_samples, n_objects[-1]), dtype=np.uint8)
-    nums = np.random.randint((n_objects[-1] + 1), size=n_samples, dtype=np.uint8)
+    nums = np.random.randint(max_objects + 1, size=n_samples, dtype=np.uint8)
 
     templates = np.reshape(mnist_data.images, (-1, 28, 28))
     resize = (lambda x: x) if templates.shape[1:] == obj_size else (lambda x: imresize(x, obj_size))
@@ -44,6 +45,13 @@ def create_mnist(parition='train', canvas_size=(50, 50), obj_size=(20, 20), n_ob
                 imgs[i, p[0]:p[0]+obj_size[0], p[1]:p[1]+obj_size[1]] = template
 
     imgs = imgs.astype(np.float32) / 255.
+
+    if expand_nums:
+        expanded = np.zeros((max_objects + 1, n_samples, 1), dtype=np.uint8)
+        for i, n in enumerate(nums):
+            expanded[:n, i] = 1
+        nums = expanded
+
     return dict(imgs=imgs, labels=labels, nums=nums)
 
 
