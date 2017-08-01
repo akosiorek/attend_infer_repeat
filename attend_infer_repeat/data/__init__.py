@@ -1,1 +1,1 @@
-from data import create_mnist
+from data import load_data, tensors_from_data
