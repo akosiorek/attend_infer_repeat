@@ -10,7 +10,10 @@ from tensorflow.examples.tutorials.mnist import input_data
 from scipy.misc import imresize
 
 
-_MNIST_PATH = os.path.join(os.path.dirname(__file__), 'MNIST_data')
+_this_dir = os.path.dirname(__file__)
+_data_dir = os.path.abspath(os.path.join(_this_dir, '../../'), )
+_data_dir = os.path.join(_data_dir, 'data')
+_MNIST_PATH = os.path.join(_data_dir, 'MNIST_data')
 
 
 def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(20, 20), n_objects=(0, 2), n_samples=None,
@@ -81,6 +84,8 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(20, 20), n_o
 
 
 def load_data(path):
+    path = os.path.join(_MNIST_PATH, path)
+
     with open(path) as f:
         data = pickle.load(f)
 

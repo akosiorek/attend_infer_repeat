@@ -100,4 +100,5 @@ ENV/
 
 
 .idea
-MNIST_data
+data/
+results

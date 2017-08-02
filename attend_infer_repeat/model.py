@@ -10,9 +10,10 @@ default_init = {
 
 class TransformParam(snt.AbstractModule):
 
-    def __init__(self, n_param):
+    def __init__(self, n_param, max_crop_size=1.0):
         super(TransformParam, self).__init__(self.__class__.__name__)
         self._n_param = n_param
+        self._max_crop_size = max_crop_size
 
     def _build(self, inpt):
 
@@ -20,8 +21,12 @@ class TransformParam(snt.AbstractModule):
         linear1 = snt.Linear(20, initializers=default_init)
         linear2 = snt.Linear(self._n_param, initializers=default_init)
         seq = snt.Sequential([flat, linear1, tf.nn.elu, linear2])
-
-        return seq(inpt) + np.asarray([1, 0, 1, 0], dtype=np.float32).reshape((1, 4))
+        output = seq(inpt)
+        sx, tx, sy, ty = tf.split(output, 4, 1)
+        sx, sy = (self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
+        tx, ty = (tf.nn.tanh(t) for t in (tx, ty))
+        output = tf.concat((sx, tx, sy, ty), -1)
+        return output
 
 
 class ConvEncoder(snt.AbstractModule):
@@ -89,7 +94,7 @@ class SpatialTransformer(snt.AbstractModule):
 class AIRCell(snt.RNNCore):
     _n_transform_param = 4
 
-    def __init__(self, img_size, crop_size, n_latent, transition):
+    def __init__(self, img_size, crop_size, n_latent, transition, max_crop_size=1.0):
         super(AIRCell, self).__init__(self.__class__.__name__)
         self._img_size = img_size
         self._n_pix = np.prod(self._img_size)
@@ -99,11 +104,25 @@ class AIRCell(snt.RNNCore):
         self._n_hidden = self._transition.output_size[0]
 
         with self._enter_variable_scope():
+            #
+            # self._canvas = snt.TrainableVariable(self._img_size, dtype=tf.float32, name='initial_canvas',
+            #                                      initializers={'w': tf.constant_initializer(-10.)})
 
-            self._canvas = snt.TrainableVariable(self._img_size, dtype=tf.float32, name='initial_canvas')
+            self._canvas_value = tf.get_variable('canvas_value', dtype=tf.float32, initializer=-10.)
+            self._canvas = tf.zeros(self._img_size, dtype=tf.float32) + self._canvas_value
 
             transform_constraints = snt.AffineWarpConstraints.no_shear_2d()
-            self._transform_param = TransformParam(self._n_transform_param)
+            # no_shear = snt.AffineWarpConstraints.no_shear_2d()
+            # fixed_scale = snt.AffineWarpConstraints.scale_2d(1., 1.)
+            # transform_constraints = no_shear.combine_with(fixed_scale)
+
+            # transform_constraints = (.4, 0.0, None), (0.0, .4, None)
+            # transform_constraints = snt.AffineWarpConstraints(transform_constraints)
+            # 4((None, 0, None), (0, None, None))
+            # 4((1.0, None, None), (None, 1.0, None))
+            # print transform_constraints.num_free_params, transform_constraints.constraints
+
+            self._transform_param = TransformParam(self._n_transform_param, max_crop_size)
 
             self._conv_encoder = ConvEncoder()
             self._spatial_transformer = SpatialTransformer(img_size, crop_size, transform_constraints)
@@ -135,13 +154,13 @@ class AIRCell(snt.RNNCore):
 
         what_code = tf.get_variable('what_init', shape=[1, self._n_latent], dtype=tf.float32)
 
-        flat_canvas = tf.reshape(self._canvas(), (1, self._n_pix))
+        flat_canvas = tf.reshape(self._canvas, (1, self._n_pix))
         # flat_canvas = tf.zeros((1, self._n_pix), dtype=tf.float32)
 
         where_code, what_code, flat_canvas = (tf.tile(i, (batch_size, 1)) for i in (where_code, what_code, flat_canvas))
 
         flat_img = tf.reshape(img, (batch_size, self._n_pix))
-        init_presence = tf.convert_to_tensor(np.ones((batch_size, 1), dtype=np.float32))
+        init_presence = tf.ones((batch_size, 1), dtype=tf.float32)
         return [flat_img, flat_canvas, what_code, where_code, hidden_state, init_presence]
 
     def _build(self, inpt, state):
@@ -170,7 +189,7 @@ class AIRCell(snt.RNNCore):
         what_code = cropped
         what_code = self._encoder(what_code)
 
-        decoded = self._decoder(what_code)
+        decoded = self._decoder(what_code)# - self._canvas_value
         inversed = self._inverse_transformer(decoded, where_code)
 
         inversed_flat = tf.reshape(inversed, (-1, self._n_pix))
