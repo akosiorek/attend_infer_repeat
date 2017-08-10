@@ -2,10 +2,20 @@ import numpy as  np
 import tensorflow as tf
 import sonnet as snt
 
+from tensorflow.contrib.distributions import Bernoulli
+
 
 default_init = {
     'w': tf.uniform_unit_scaling_initializer(),
     'b': tf.truncated_normal_initializer(stddev=1e-2)}
+
+
+def eps_explore(samples, eps):
+    shape = tf.shape(samples)
+    do_explore = tf.less(tf.random_uniform(shape), tf.ones(shape) * eps)
+    random = tf.cast(tf.round(tf.random_uniform(shape)), samples.dtype)
+    samples = tf.where(do_explore, random, samples)
+    return samples
 
 
 class TransformParam(snt.AbstractModule):
@@ -22,26 +32,12 @@ class TransformParam(snt.AbstractModule):
         linear2 = snt.Linear(self._n_param, initializers=default_init)
         seq = snt.Sequential([flat, linear1, tf.nn.elu, linear2])
         output = seq(inpt)
+        output *= 1e-4
         sx, tx, sy, ty = tf.split(output, 4, 1)
-        sx, sy = (self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
+        sx, sy = (.5e-4 + (1 - 1e-4) * self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
         tx, ty = (tf.nn.tanh(t) for t in (tx, ty))
         output = tf.concat((sx, tx, sy, ty), -1)
         return output
-
-
-class ConvEncoder(snt.AbstractModule):
-    def __init__(self):
-        super(ConvEncoder, self).__init__(self.__class__.__name__)
-
-    def _build(self, inpt):
-
-        if len(inpt.get_shape().as_list()) == 3:
-            inpt = inpt[..., tf.newaxis]
-
-        conv1 = snt.Conv2D(32, (3, 3), 2, initializers=default_init)
-        conv2 = snt.Conv2D(32, (3, 3), 2, initializers=default_init)
-        seq = snt.Sequential((conv1, tf.nn.elu, conv2, tf.nn.elu))
-        return seq(inpt)
 
 
 class Encoder(snt.AbstractModule):
@@ -94,7 +90,9 @@ class SpatialTransformer(snt.AbstractModule):
 class AIRCell(snt.RNNCore):
     _n_transform_param = 4
 
-    def __init__(self, img_size, crop_size, n_latent, transition, max_crop_size=1.0):
+    def __init__(self, img_size, crop_size, n_latent, transition, max_crop_size=1.0,
+                 presence_bias=0., explore_eps=None, debug=False):
+
         super(AIRCell, self).__init__(self.__class__.__name__)
         self._img_size = img_size
         self._n_pix = np.prod(self._img_size)
@@ -102,6 +100,10 @@ class AIRCell(snt.RNNCore):
         self._n_latent = n_latent
         self._transition = transition
         self._n_hidden = self._transition.output_size[0]
+
+        self._presence_bias = presence_bias
+        self._explore_eps = explore_eps
+        self._debug = debug
 
         with self._enter_variable_scope():
             #
@@ -112,19 +114,9 @@ class AIRCell(snt.RNNCore):
             self._canvas = tf.zeros(self._img_size, dtype=tf.float32) + self._canvas_value
 
             transform_constraints = snt.AffineWarpConstraints.no_shear_2d()
-            # no_shear = snt.AffineWarpConstraints.no_shear_2d()
-            # fixed_scale = snt.AffineWarpConstraints.scale_2d(1., 1.)
-            # transform_constraints = no_shear.combine_with(fixed_scale)
-
-            # transform_constraints = (.4, 0.0, None), (0.0, .4, None)
-            # transform_constraints = snt.AffineWarpConstraints(transform_constraints)
-            # 4((None, 0, None), (0, None, None))
-            # 4((1.0, None, None), (None, 1.0, None))
-            # print transform_constraints.num_free_params, transform_constraints.constraints
 
             self._transform_param = TransformParam(self._n_transform_param, max_crop_size)
 
-            self._conv_encoder = ConvEncoder()
             self._spatial_transformer = SpatialTransformer(img_size, crop_size, transform_constraints)
             self._input_encoder = Encoder(self._transition.output_size[0])
             self._encoder = Encoder(n_latent)
@@ -142,9 +134,10 @@ class AIRCell(snt.RNNCore):
             1,                              # presence
         ]
 
+
     @property
     def output_size(self):
-        return [np.prod(self._img_size), np.prod(self._crop_size), self._n_latent, self._n_transform_param, 1]
+        return [np.prod(self._img_size), np.prod(self._crop_size), self._n_latent, self._n_transform_param, 1, 1]
 
     def initial_state(self, img):
         batch_size = img.get_shape().as_list()[0]
@@ -168,36 +161,44 @@ class AIRCell(snt.RNNCore):
         img_flat, canvas_flat, what_code, where_code, hidden_state, presence = state
         img = tf.reshape(img_flat, (-1,) + tuple(self._img_size))
 
-        # inpt_encoding = self._conv_encoder(img)
         inpt_encoding = img
         inpt_encoding = self._input_encoder(inpt_encoding)
 
-        rnn_inpt = tf.concat((inpt_encoding, what_code, where_code, presence), -1)
-        rnn_inpt = snt.Linear(self._n_hidden, initializers=default_init)(rnn_inpt)
-        rnn_inpt = tf.nn.elu(rnn_inpt)
-        hidden_output, hidden_state = self._transition(rnn_inpt, hidden_state)
+        with tf.variable_scope('rnn_inpt'):
+            rnn_inpt = tf.concat((inpt_encoding, what_code, where_code, presence), -1)
+            rnn_inpt = snt.Linear(self._n_hidden, initializers=default_init)(rnn_inpt)
+            rnn_inpt = tf.nn.elu(rnn_inpt)
+            hidden_output, hidden_state = self._transition(rnn_inpt, hidden_state)
 
         where_code = self._transform_param(hidden_output)
         cropped = self._spatial_transformer(img, where_code)
 
-        presence_model = snt.Linear(self._n_latent, initializers=default_init), tf.nn.elu, snt.Linear(1, initializers=default_init)
-        presence_model = snt.Sequential(presence_model)
-        presence_logit = presence_model(hidden_output)# + 1e3
-        presence = tf.nn.sigmoid(presence_logit)
+        with tf.variable_scope('presence'):
+            presence_model = snt.Linear(self._n_latent, initializers=default_init), tf.nn.elu, snt.Linear(1, initializers=default_init)
+            presence_model = snt.Sequential(presence_model)
+            presence_logit = presence_model(hidden_output) + self._presence_bias
+            presence_prob = tf.nn.sigmoid(presence_logit)
 
-        # what_code = self._conv_encoder(cropped)
+            presence_distrib = Bernoulli(probs=presence_prob, dtype=tf.float32,
+                                         validate_args=self._debug, allow_nan_stats=not self._debug)
+
+            presence = presence_distrib.sample()
+            if self._explore_eps is not None:
+                presence = eps_explore(presence, self._explore_eps)
+
         what_code = cropped
         what_code = self._encoder(what_code)
 
-        decoded = self._decoder(what_code)# - self._canvas_value
+        decoded = self._decoder(what_code)
         inversed = self._inverse_transformer(decoded, where_code)
 
-        inversed_flat = tf.reshape(inversed, (-1, self._n_pix))
+        with tf.variable_scope('rnn_outputs'):
+            inversed_flat = tf.reshape(inversed, (-1, self._n_pix))
 
-        canvas_flat = canvas_flat + presence * inversed_flat
-        decoded_flat = tf.reshape(decoded, (-1, np.prod(self._crop_size)))
+            canvas_flat = canvas_flat + presence * inversed_flat
+            decoded_flat = tf.reshape(decoded, (-1, np.prod(self._crop_size)))
 
-        output = [canvas_flat, decoded_flat, what_code, where_code, presence_logit]
+        output = [canvas_flat, decoded_flat, what_code, where_code, presence_logit, presence]
         state = [img_flat, canvas_flat, what_code, where_code, hidden_state, presence]
         return output, state
 
@@ -218,7 +219,7 @@ if __name__ == '__main__':
 
     dummy_sequence = tf.zeros((n_steps, batch_size, 1), name='dummy_sequence')
     outputs, state = tf.nn.dynamic_rnn(air, dummy_sequence, initial_state=initial_state, time_major=True)
-    canvas, crop, what, where, presence_logit = outputs
+    canvas, crop, what, where, presence_logit, presence = outputs
 
     canvas = tf.reshape(canvas, (n_steps, batch_size,) + tuple(img_size))
     final_canvas = canvas[-1]
