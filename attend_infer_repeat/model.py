@@ -91,7 +91,7 @@ class AIRCell(snt.RNNCore):
     _n_transform_param = 4
 
     def __init__(self, img_size, crop_size, n_latent, transition, max_crop_size=1.0,
-                 presence_bias=0., explore_eps=None, debug=False):
+                 sample_presence=True, canvas_init=-10., presence_bias=0., explore_eps=None, debug=False):
 
         super(AIRCell, self).__init__(self.__class__.__name__)
         self._img_size = img_size
@@ -101,6 +101,7 @@ class AIRCell(snt.RNNCore):
         self._transition = transition
         self._n_hidden = self._transition.output_size[0]
 
+        self._sample_presence = sample_presence
         self._presence_bias = presence_bias
         self._explore_eps = explore_eps
         self._debug = debug
@@ -110,8 +111,10 @@ class AIRCell(snt.RNNCore):
             # self._canvas = snt.TrainableVariable(self._img_size, dtype=tf.float32, name='initial_canvas',
             #                                      initializers={'w': tf.constant_initializer(-10.)})
 
-            self._canvas_value = tf.get_variable('canvas_value', dtype=tf.float32, initializer=-10.)
-            self._canvas = tf.zeros(self._img_size, dtype=tf.float32) + self._canvas_value
+            self._canvas = tf.zeros(self._img_size, dtype=tf.float32)
+            if canvas_init is not None:
+                self._canvas_value = tf.get_variable('canvas_value', dtype=tf.float32, initializer=canvas_init)
+                self._canvas += self._canvas_value
 
             transform_constraints = snt.AffineWarpConstraints.no_shear_2d()
 
@@ -179,12 +182,15 @@ class AIRCell(snt.RNNCore):
             presence_logit = presence_model(hidden_output) + self._presence_bias
             presence_prob = tf.nn.sigmoid(presence_logit)
 
-            presence_distrib = Bernoulli(probs=presence_prob, dtype=tf.float32,
-                                         validate_args=self._debug, allow_nan_stats=not self._debug)
+            if self._sample_presence:
+                presence_distrib = Bernoulli(probs=presence_prob, dtype=tf.float32,
+                                             validate_args=self._debug, allow_nan_stats=not self._debug)
 
-            presence = presence_distrib.sample()
-            if self._explore_eps is not None:
-                presence = eps_explore(presence, self._explore_eps)
+                presence = presence_distrib.sample()
+                if self._explore_eps is not None:
+                    presence = eps_explore(presence, self._explore_eps)
+            else:
+                presence = presence_prob
 
         what_code = cropped
         what_code = self._encoder(what_code)
