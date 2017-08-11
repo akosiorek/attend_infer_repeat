@@ -186,9 +186,11 @@ class AIRCell(snt.RNNCore):
                 presence_distrib = Bernoulli(probs=presence_prob, dtype=tf.float32,
                                              validate_args=self._debug, allow_nan_stats=not self._debug)
 
-                presence = presence_distrib.sample()
+                new_presence = presence_distrib.sample()
                 if self._explore_eps is not None:
-                    presence = eps_explore(presence, self._explore_eps)
+                    new_presence = eps_explore(presence, self._explore_eps)
+                presence *= new_presence
+
             else:
                 presence = presence_prob
 

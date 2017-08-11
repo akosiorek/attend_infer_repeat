@@ -8,8 +8,8 @@ class Loss(object):
 
     def add(self, loss=None, per_sample=None, weight=1.):
         if isinstance(loss, Loss):
-            per_sample = loss._per_sample
-            loss = loss._value
+            per_sample = loss.per_sample
+            loss = loss.value
 
         self._update('_value', loss, weight)
         self._update('_per_sample', per_sample, weight)
@@ -20,13 +20,13 @@ class Loss(object):
         if value is None:
             value = expr
         else:
-            assert value.get_shape() == expr.get_shape()
+            assert value.get_shape() == expr.get_shape(), 'Shape should be {} but is {}'.format(value.get_shape(), expr.get_shape())
             value += expr
 
         setattr(self, name, value)
 
     def _get_value(self, name):
-        v = self._value
+        v = getattr(self, name)
         if v is None:
             v = tf.zeros([])
         return v
