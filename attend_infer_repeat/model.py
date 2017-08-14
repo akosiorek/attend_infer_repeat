@@ -12,7 +12,7 @@ default_init = {
 
 def eps_explore(samples, eps):
     shape = tf.shape(samples)
-    do_explore = tf.less(tf.random_uniform(shape), tf.ones(shape) * eps)
+    do_explore = tf.less(tf.random_uniform(shape), tf.ones(shape, dtype=tf.float32) * eps)
     random = tf.cast(tf.round(tf.random_uniform(shape)), samples.dtype)
     samples = tf.where(do_explore, random, samples)
     return samples
@@ -183,12 +183,14 @@ class AIRCell(snt.RNNCore):
             presence_prob = tf.nn.sigmoid(presence_logit)
 
             if self._sample_presence:
+                if self._explore_eps is not None:
+                    presence_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
                 presence_distrib = Bernoulli(probs=presence_prob, dtype=tf.float32,
                                              validate_args=self._debug, allow_nan_stats=not self._debug)
 
                 new_presence = presence_distrib.sample()
-                if self._explore_eps is not None:
-                    new_presence = eps_explore(presence, self._explore_eps)
+                #if self._explore_eps is not None:
+                #    new_presence = eps_explore(presence, self._explore_eps)
                 presence *= new_presence
 
             else:
@@ -197,7 +199,7 @@ class AIRCell(snt.RNNCore):
         what_code = cropped
         what_code = self._encoder(what_code)
 
-        decoded = self._decoder(what_code)
+        decoded = self._decoder(what_code) #* 1e-2
         inversed = self._inverse_transformer(decoded, where_code)
 
         with tf.variable_scope('rnn_outputs'):
