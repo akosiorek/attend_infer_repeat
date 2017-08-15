@@ -13,12 +13,11 @@ from tensorflow.contrib.distributions import Bernoulli
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-#get_ipython().magic(u'matplotlib inline')
 
 from neurocity import minimize_clipped
 from neurocity.tools.params import num_trainable_params
 
-from tf_tools.eval import make_expr_logger
+from tf_tools.eval import make_expr_logger, gradient_summaries
 
 from data import load_data, tensors_from_data
 from model import AIRCell
@@ -51,8 +50,12 @@ num_steps_prior = 0.
 latent_code_prior = 0.
 
 use_reinforce = True
+sample_presence = True
+presence_bias = 0.
 
 init_explore_eps = .05
+
+l2_weight = 1e-5
 
 
 # In[4]:
@@ -69,13 +72,16 @@ test_tensors = tensors_from_data(test_data, batch_size, axes, shuffle=False)
 x, test_x = train_tensors['imgs'], test_tensors['imgs']
 y, test_y = train_tensors['nums'], test_tensors['nums']
 
-explore_eps = tf.get_variable('explore_eps', initializer=init_explore_eps, trainable=False)
-
+if init_explore_eps > 0:
+    explore_eps = tf.get_variable('explore_eps', initializer=init_explore_eps, trainable=False)
+else:
+    explore_eps = None
+    
 transition = snt.LSTM(n_hidden)
 air = AIRCell(img_size, crop_size, n_latent, transition, max_crop_size=1.0,
               canvas_init=None,
-              sample_presence=True,
-              presence_bias=1.,
+              sample_presence=sample_presence,
+              presence_bias=presence_bias,
               explore_eps=explore_eps,
               debug=True)
 
@@ -195,14 +201,27 @@ if use_reinforce:
     baseline_opt = tf.train.RMSPropOptimizer(10 * lr_tensor, momentum=.9, centered=True)
     baseline_train_step = baseline_opt.minimize(baseline_loss, var_list=baseline_vars)
     train_step.append(baseline_train_step)
-
     
-### Optimizer #################################################################################
+    
+    
+###    Optimizer #################################################################################
+
+model_vars = list(set(tf.trainable_variables()) - set(baseline_vars))
+    
+#######    L2 reg ################################################################################
+if l2_weight > 0.:
+    l2_loss = l2_weight * sum(map(tf.nn.l2_loss, model_vars))
+    opt_loss += l2_loss
+    tf.summary.scalar('l2_loss', l2_loss)
 
 opt = tf.train.RMSPropOptimizer(lr_tensor, momentum=.9, centered=True)
 # true_train_step = opt.minimize(opt_loss)
-true_train_step = minimize_clipped(opt, opt_loss, clip_value=.3, normalize_by_num_params=True)
+# true_train_step = minimize_clipped(opt, opt_loss, clip_value=.3, normalize_by_num_params=True)
+gvs = opt.compute_gradients(opt_loss, var_list=model_vars)
+true_train_step = opt.apply_gradients(gvs)
 train_step.append(true_train_step)
+
+gradient_summaries(gvs)
 
 
 ###    Metrics #################################################################################
@@ -211,12 +230,6 @@ num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(gt_num, num_step_per_sam
 
 
 # In[9]:
-
-print presence.get_shape()
-print what.get_shape()
-
-
-# In[10]:
 
 vs = tf.trainable_variables()
 gs = tf.gradients(opt_loss, vs)
@@ -230,7 +243,7 @@ for v, g in zip(vs, gs):
 named_grads = {v.name: g for v, g in zip(vs, gs) if g is not None}
 
 
-# In[11]:
+# In[10]:
 
 def grad_variance(n=10, sort_by_var=True):
     gs = {k: [] for k in named_grads}
@@ -256,7 +269,7 @@ def print_grad_variance():
     print
 
 
-# In[12]:
+# In[11]:
 
 config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
@@ -266,24 +279,43 @@ sess.run(tf.global_variables_initializer())
 all_summaries = tf.summary.merge_all()
 
 
-# In[13]:
+# In[12]:
 
-summary_writer = tf.summary.FileWriter(logdir)
+summary_writer = tf.summary.FileWriter(logdir, sess.graph)
 saver = tf.train.Saver()
 
 
-# In[14]:
+# In[13]:
 
 imgs = train_data['imgs']
 presence_gt = train_data['nums']
 train_itr = -1
 
 
-# In[15]:
+# In[14]:
+
+from matplotlib.patches import Rectangle
+def rect(bbox, c=None, facecolor='none', label=None, ax=None):
+    r = Rectangle((bbox[1], bbox[0]), bbox[3], bbox[2],
+            edgecolor=c, facecolor=facecolor, label=label)
+
+    if ax is not None:
+        ax.add_patch(r)
+    return r
+
+def rect_stn(ax, width, height, w, c=None):
+    sx, tx, sy, ty = w
+    x = width * (1. - sx + tx) / 2
+    y = height * (1. - sy + ty) / 2
+    bbox = [y-.5, x-.5, height*sy, width*sx]
+    rect(bbox, c, ax=ax)
+
+
 
 def make_fig(checkpoint_dir=None, global_step=None):
-    xx, pred_canvas, pred_crop, pres = sess.run([x, prob_canvas, cropped, presence])
-
+    xx, pred_canvas, pred_crop, pres, w = sess.run([x, prob_canvas, cropped, presence, where])
+    height, width = xx.shape[1:]
+    
     max_imgs = 10
     bs = min(max_imgs, batch_size)
     scale = 1.
@@ -296,6 +328,8 @@ def make_fig(checkpoint_dir=None, global_step=None):
     for i, ax_row in enumerate(axes[1:1+n_steps]):
         for j, ax in enumerate(ax_row):
             ax.imshow(pred_canvas[i, j], cmap='gray', vmin=0, vmax=1)
+            if pres[i, j, 0] > .5:
+                rect_stn(ax, width, height, w[i, j], 'r')
 
     for i, ax_row in enumerate(axes[1+n_steps:]):
         for j, ax in enumerate(ax_row):
@@ -310,7 +344,10 @@ def make_fig(checkpoint_dir=None, global_step=None):
         fig_name = osp.join(checkpoint_dir, 'progress_fig_{}.png'.format(global_step))
         fig.savefig(fig_name, dpi=300)
         plt.close('all')
-    
+
+
+# In[15]:
+
 exprs = {
     'loss': loss.value,
     'rec_loss': rec_loss,
@@ -331,6 +368,9 @@ if use_reinforce:
     exprs['reinforce_loss'] = reinforce_loss
     exprs['imp_weight'] = tf.reduce_mean(importance_weight)
     
+if l2_weight > 0:
+    exprs['l2_loss'] = l2_loss
+    
 train_log = make_expr_logger(sess, summary_writer, train_data['imgs'].shape[0] / batch_size, exprs, name='train')
 test_log = make_expr_logger(sess, summary_writer, test_data['imgs'].shape[0] / batch_size, exprs, name='test', data_dict={x: test_x, y: test_y})
 
@@ -348,23 +388,9 @@ for train_itr in xrange(train_itr+1, int(1e7)):
         summaries = sess.run(all_summaries)
         summary_writer.add_summary(summaries, train_itr)
         
-    if train_itr % 1000 == 0:
+    if train_itr % 5000 == 0:
         log(train_itr)
         
-        
-        
-        
-        
-    if train_itr % 1000 == 0:
-#         saver.save(sess, checkpoint_name, global_step=train_itr)
+    if train_itr % 10000 == 0:
+        saver.save(sess, checkpoint_name, global_step=train_itr)
         make_fig(logdir, train_itr)    
-    
-    if train_itr % 1000 == 0:
-        print 'baseline value = {}'.format(sess.run(baseline_mean))
-        print_grad_variance()
-
-
-# In[20]:
-
-make_fig()
-
