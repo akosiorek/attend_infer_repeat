@@ -2,7 +2,7 @@ import numpy as  np
 import tensorflow as tf
 import sonnet as snt
 
-from tensorflow.contrib.distributions import Bernoulli
+from tensorflow.contrib.distributions import Bernoulli, NormalWithSoftplusScale
 
 
 default_init = {
@@ -52,6 +52,15 @@ class Encoder(snt.AbstractModule):
         linear2 = snt.Linear(self._n_latent, initializers=default_init)
         seq = snt.Sequential([flat, linear1, tf.nn.elu, linear2, tf.nn.elu])
         return seq(inpt)
+
+
+class StochasticEncoder(Encoder):
+    def _build(self, inpt):
+        inpt = super(StochasticEncoder, self)._build(inpt)
+        linear = snt.Linear(self._n_latent * 2, initializers=default_init)
+        output = linear(inpt)
+        loc, scale = output[..., :self._n_latent], output[..., self._n_latent:]
+        return loc, scale
 
 
 class Decoder(snt.AbstractModule):
@@ -122,7 +131,9 @@ class AIRCell(snt.RNNCore):
 
             self._spatial_transformer = SpatialTransformer(img_size, crop_size, transform_constraints)
             self._input_encoder = Encoder(self._transition.output_size[0])
-            self._encoder = Encoder(n_latent)
+            # self._encoder = Encoder(n_latent)
+            self._encoder = StochasticEncoder(n_latent)
+
             self._decoder = Decoder(crop_size)
             self._inverse_transformer = SpatialTransformer(img_size, crop_size, transform_constraints, inverse=True)
 
@@ -140,7 +151,7 @@ class AIRCell(snt.RNNCore):
 
     @property
     def output_size(self):
-        return [np.prod(self._img_size), np.prod(self._crop_size), self._n_latent, self._n_transform_param, 1, 1]
+        return [np.prod(self._img_size), np.prod(self._crop_size), self._n_latent, self._n_latent, self._n_latent, self._n_transform_param, 1, 1]
 
     def initial_state(self, img):
         batch_size = img.get_shape().as_list()[0]
@@ -196,8 +207,11 @@ class AIRCell(snt.RNNCore):
             else:
                 presence = presence_prob
 
-        what_code = cropped
-        what_code = self._encoder(what_code)
+        # what_code = self._encoder(cropped)
+        what_loc, what_scale = self._encoder(cropped)
+        what_distrib = NormalWithSoftplusScale(what_loc, what_scale,
+                                                validate_args=self._debug, allow_nan_stats=not self._debug)
+        what_code = what_distrib.sample()
 
         decoded = self._decoder(what_code) #* 1e-2
         inversed = self._inverse_transformer(decoded, where_code)
@@ -208,7 +222,7 @@ class AIRCell(snt.RNNCore):
             canvas_flat = canvas_flat + presence * inversed_flat
             decoded_flat = tf.reshape(decoded, (-1, np.prod(self._crop_size)))
 
-        output = [canvas_flat, decoded_flat, what_code, where_code, presence_logit, presence]
+        output = [canvas_flat, decoded_flat, what_code, what_loc, what_scale, where_code, presence_logit, presence]
         state = [img_flat, canvas_flat, what_code, where_code, hidden_state, presence]
         return output, state
 
@@ -229,7 +243,7 @@ if __name__ == '__main__':
 
     dummy_sequence = tf.zeros((n_steps, batch_size, 1), name='dummy_sequence')
     outputs, state = tf.nn.dynamic_rnn(air, dummy_sequence, initial_state=initial_state, time_major=True)
-    canvas, crop, what, where, presence_logit, presence = outputs
+    canvas, crop, what, what_loc, what_scale, where, presence_logit, presence = outputs
 
     canvas = tf.reshape(canvas, (n_steps, batch_size,) + tuple(img_size))
     final_canvas = canvas[-1]

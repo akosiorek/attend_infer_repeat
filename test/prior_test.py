@@ -7,65 +7,92 @@ from tf_tools.testing_tools import TFTestBase
 from attend_infer_repeat.prior import *
 
 
-class TabularKLTest(TFTestBase):
-
-    @classmethod
-    def setUpClass(cls):
-        super(TabularKLTest, cls).setUpClass()
-
-        cls.x.set_shape([None])
-        cls.kl = tabular_kl(cls.x, cls.y, 0.)
-
-    def test_same(self):
-        p = [.25] * 4
-        kl = self.eval(self.kl, p, p)
-        self.assertEqual(sum(kl), 0.)
-
-    def test_zero(self):
-        p = [0., .25, .25, .5]
-        q = [.25] * 4
-
-        kl = self.eval(self.kl, p, q)
-        self.assertGreater(sum(kl), 0.)
-
-    def test_one(self):
-        p = [0., 1., 0., 0.]
-        q = [1. - 1e-7, 1e-7, 0., 0.]
-
-        kl = self.eval(self.kl, p, q)
-        self.assertGreater(sum(kl), 0.)
-
-    def test_always_positive_on_random(self):
-        def gen():
-            a = abs(np.random.rand(4))
-            a /= a.sum()
-            return a
-
-        for i in xrange(100):
-            p = gen()
-            q = gen()
-
-            kl = self.eval(self.kl, p, q)
-            self.assertGreater(sum(kl), 0.)
+_N_STRESS_ITER = 100
 
 
 class GeometricPriorTest(unittest.TestCase):
 
     def test(self):
         p = geometric_prior(.25, 3)
-        self.assertEqual(p.shape, (4, 1, 1))
+        self.assertEqual(p.shape, (4,))
         self.assertTrue(.5 < p[0] < .75)
         self.assertTrue(.2 < p[1] < .25)
         self.assertTrue(.24**2 < p[2] < .25**2)
         self.assertTrue(.24**3 < p[3] < .25**3)
 
 
+class TabularKLTest(TFTestBase):
+
+    vars = {
+        'x': [tf.float32, [None, None]],
+        'y': [tf.float32, [None, None]]
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        super(TabularKLTest, cls).setUpClass()
+
+        cls.kl = tabular_kl(cls.x, cls.y, 0.)
+
+    def test_same(self):
+        p = np.asarray([.25] * 4).reshape((1, 4))
+        kl = self.eval(self.kl, p, p)
+        self.assertEqual(kl.shape, (1, 4))
+        self.assertEqual(kl.sum(), 0.)
+
+    def test_zero(self):
+        p = [0., .25, .25, .5]
+        q = [.25] * 4
+        p, q = (np.asarray(i).reshape((1, 4)) for i in (p, q))
+
+        kl = self.eval(self.kl, p, q)
+        self.assertGreater(kl.sum(), 0.)
+
+    def test_one(self):
+        p = [0., 1., 0., 0.]
+        q = [1. - 1e-7, 1e-7, 0., 0.]
+        p, q = (np.asarray(i).reshape((1, 4)) for i in (p, q))
+
+        kl = self.eval(self.kl, p, q)
+        self.assertGreater(kl.sum(), 0.)
+
+    def test_always_positive_on_random(self):
+
+        def gen():
+            a = abs(np.random.rand(1, 4))
+            a /= a.sum()
+            return a
+
+        for i in xrange(_N_STRESS_ITER):
+            p = gen()
+            q = gen()
+
+            kl = self.eval(self.kl, p, q)
+            self.assertGreater(kl.sum(), 0.)
+
+
 class ConditionalPresencePosteriorTest(TFTestBase):
+
+    vars = {'x': [tf.float32, [None]]}
 
     @classmethod
     def setUpClass(cls):
         super(ConditionalPresencePosteriorTest, cls).setUpClass()
         cls.probs = presence_prob_table(cls.x)
+
+    def test_shape(self):
+
+        x = tf.placeholder(tf.float32, [3])
+        probs = presence_prob_table(x)
+        self.assertEqual(tuple(probs.get_shape().as_list()), (4,))
+
+        x = tf.placeholder(tf.float32, [7, 3])
+        probs = presence_prob_table(x)
+        self.assertEqual(tuple(probs.get_shape().as_list()), (7, 4,))
+
+        x = tf.placeholder(tf.float32, [7, 11, 3])
+        probs = presence_prob_table(x)
+        self.assertEqual(tuple(probs.get_shape().as_list()), (7, 11, 4,))
 
     def test_obvious(self):
         p = [0., 0., 0.]
@@ -92,13 +119,13 @@ class ConditionalPresencePosteriorTest(TFTestBase):
 
 class NumStepsKLTest(TFTestBase):
 
-    vars = {'x': [tf.float32, [None]]}
+    vars = {'x': [tf.float32, [None, None]]}
 
     @classmethod
     def setUpClass(cls):
         super(NumStepsKLTest, cls).setUpClass()
 
-        cls.prior = geometric_prior(.005, 3).squeeze()
+        cls.prior = geometric_prior(.005, 3)
 
         cls.posterior = presence_prob_table(cls.x)
         cls.posterior_grad = tf.gradients(cls.posterior, cls.x)
@@ -110,8 +137,8 @@ class NumStepsKLTest(TFTestBase):
         cls.free_kl_grad = tf.gradients(tf.reduce_sum(cls.free_kl), cls.x)
 
     def test_free_stress(self):
-        for i in xrange(100):
-            p = abs(np.random.rand(4))
+        for i in xrange(_N_STRESS_ITER):
+            p = abs(np.random.rand(1, 4))
             p /= p.sum()
 
             kl = self.eval(self.free_kl, p)
@@ -124,10 +151,12 @@ class NumStepsKLTest(TFTestBase):
             self.assertTrue(np.isfinite(grad).all())
 
     def test_posterior_stress(self):
-        for i in xrange(100):
-            p = np.random.rand(3)
+        batch_size = 1
+
+        for i in xrange(_N_STRESS_ITER):
+            p = np.random.rand(batch_size, 3)
             kl = self.eval(self.posterior_kl, p)
-            self.assertGreater(kl.sum(), 0)
+            self.assertGreater(kl.sum(), 0), '{}'.format(kl)
             self.assertFalse(np.isnan(kl).any())
             self.assertTrue(np.isfinite(kl).all())
 
@@ -136,7 +165,7 @@ class NumStepsKLTest(TFTestBase):
             self.assertTrue(np.isfinite(grad).all())
 
     def test_posterior_zeros(self):
-        p = np.asarray([.5, 0., 0.])
+        p = np.asarray([.5, 0., 0.]).reshape((1, 3))
 
         posterior = self.eval(self.posterior, p)
         print 'posterior', posterior
@@ -163,7 +192,7 @@ class NumStepsSamplingKLTest(TFTestBase):
     def setUpClass(cls):
         super(NumStepsSamplingKLTest, cls).setUpClass()
 
-        cls.prior = geometric_prior(.05, 3).squeeze()
+        cls.prior = geometric_prior(.05, 3)
 
         cls.posterior = presence_prob_table(cls.x)
         cls.posterior_kl = tabular_kl_sampling(cls.posterior, cls.prior, cls.y)
@@ -172,15 +201,15 @@ class NumStepsSamplingKLTest(TFTestBase):
     def test_free_stress(self):
         batch_size = 64
 
-        for i in xrange(100):
+        for i in xrange(_N_STRESS_ITER):
             p = abs(np.random.rand(batch_size, 4))
             j = np.random.randint(1, 4)
-            # p[j:] = 0
-            # p /= p.sum(1, keepdims=True)
+            p[j:] = 0
+            p /= p.sum(1, keepdims=True)
 
             samples = np.random.randint(0, 4, (batch_size, 1))
 
             kl = self.eval(self.free_kl, p, samples)
-            self.assertGreater(kl.sum(), 0)
+            self.assertGreater(kl.sum(), 0, 'at iter = {}'.format(i))
             self.assertFalse(np.isnan(kl).any())
             self.assertTrue(np.isfinite(kl).all())
