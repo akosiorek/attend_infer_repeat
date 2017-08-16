@@ -153,3 +153,34 @@ class NumStepsKLTest(TFTestBase):
         print grad
         self.assertFalse(np.isnan(grad).any())
         self.assertTrue(np.isfinite(grad).all())
+
+
+class NumStepsSamplingKLTest(TFTestBase):
+
+    vars = {'x': [tf.float32, [None, None]], 'y': [tf.int32, [None, None]]}
+
+    @classmethod
+    def setUpClass(cls):
+        super(NumStepsSamplingKLTest, cls).setUpClass()
+
+        cls.prior = geometric_prior(.05, 3).squeeze()
+
+        cls.posterior = presence_prob_table(cls.x)
+        cls.posterior_kl = tabular_kl_sampling(cls.posterior, cls.prior, cls.y)
+        cls.free_kl = tabular_kl_sampling(cls.x, cls.prior, cls.y)
+
+    def test_free_stress(self):
+        batch_size = 64
+
+        for i in xrange(100):
+            p = abs(np.random.rand(batch_size, 4))
+            j = np.random.randint(1, 4)
+            # p[j:] = 0
+            # p /= p.sum(1, keepdims=True)
+
+            samples = np.random.randint(0, 4, (batch_size, 1))
+
+            kl = self.eval(self.free_kl, p, samples)
+            self.assertGreater(kl.sum(), 0)
+            self.assertFalse(np.isnan(kl).any())
+            self.assertTrue(np.isfinite(kl).all())
