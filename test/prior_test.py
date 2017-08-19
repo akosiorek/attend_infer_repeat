@@ -192,24 +192,47 @@ class NumStepsSamplingKLTest(TFTestBase):
     def setUpClass(cls):
         super(NumStepsSamplingKLTest, cls).setUpClass()
 
-        cls.prior = geometric_prior(.05, 3)
+        cls.prior = geometric_prior(.5, 3)
 
         cls.posterior = presence_prob_table(cls.x)
         cls.posterior_kl = tabular_kl_sampling(cls.posterior, cls.prior, cls.y)
         cls.free_kl = tabular_kl_sampling(cls.x, cls.prior, cls.y)
+
+    def test_sample_from_list(self):
+
+        samples = np.random.randint(0, 4, (10, 1))
+        sampling_fun = sample_from_1d_tensor(self.prior, samples)
+        res = self.sess.run(sampling_fun).squeeze()
+
+        samples = samples.squeeze()
+        for r, s in zip(res, samples):
+            self.assertEqual(r, self.prior[s])
+
+    def test_sample_from_matrix(self):
+        samples = np.random.randint(0, 4, (10, 1))
+        matrix = np.random.rand(10, 4)
+
+        sampling_fun = sample_from_tensor(matrix, samples)
+        res = self.sess.run(sampling_fun).squeeze()
+
+        samples = samples.squeeze()
+        for r, s, row in zip(res, samples, matrix):
+            self.assertEqual(r, row[s])
 
     def test_free_stress(self):
         batch_size = 64
 
         for i in xrange(_N_STRESS_ITER):
             p = abs(np.random.rand(batch_size, 4))
-            j = np.random.randint(1, 4)
-            p[j:] = 0
+            # for k in xrange(batch_size):
+            #     j = np.random.randint(1, 4)
+            #     p[k, j:] = 0
             p /= p.sum(1, keepdims=True)
 
             samples = np.random.randint(0, 4, (batch_size, 1))
 
             kl = self.eval(self.free_kl, p, samples)
-            self.assertGreater(kl.sum(), 0, 'at iter = {}'.format(i))
+            print kl
+            self.assertGreater(kl.sum(), 0, 'value = {} at iter = {}'.format(kl.sum(), i))
             self.assertFalse(np.isnan(kl).any())
             self.assertTrue(np.isfinite(kl).all())

@@ -39,20 +39,60 @@ def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
     return kl
 
 
-def tabular_kl_sampling(p, q, samples):
+def sample_from_1d_tensor(arr, idx):
+    arr = tf.convert_to_tensor(arr)
+    assert len(arr.get_shape()) == 1, "shape is {}".format(arr.get_shape())
 
-    samples = tf.to_int32(samples)
-    p, q = (tf.squeeze(i) for i in (p, q))
-    q = tf.gather(q, samples)
+    idx = tf.to_int32(idx)
+    arr = tf.gather(tf.squeeze(arr), idx)
+    return arr
 
-    # TODO: implement this by flattening p and shifting `samples`
-    shift = tf.range(tf.shape(p)[0]) * tf.shape(p)[1]
 
-    p = tf.reshape(p, (-1,))
-    samples = tf.reshape(samples, (-1,)) + shift
+def sample_from_tensor(tensor, idx):
+    tensor = tf.convert_to_tensor(tensor)
+    if len(tensor.get_shape()) > 2:
+        raise NotImplemented
 
-    p = tf.gather(p, samples)
-    p = tf.reshape(p, tf.shape(q))
+    idx = tf.to_int32(idx)
+    shift = tf.range(tf.shape(tensor)[0]) * tf.shape(tensor)[1]
 
-    kl = tf.where(tf.greater(p, 0.), tf.log(p / q), tf.zeros_like(p))
+    p_flat = tf.reshape(tensor, (-1,))
+    idx_flat = tf.reshape(idx, (-1,)) + shift
+    samples_flat = sample_from_1d_tensor(p_flat, idx_flat)
+    samples = tf.reshape(samples_flat, tf.shape(idx))
+    return samples
+
+
+def tabular_kl_sampling(p, q, samples, uniform=False):
+
+    p_samples = sample_from_tensor(p, samples)
+    q_samples = sample_from_1d_tensor(q, samples)
+
+    logarg = p_samples / q_samples
+    kl = tf.log(logarg)
+
+    if uniform:
+        raise NotImplemented
+
     return kl
+
+
+class NumStepsDistribution(object):
+
+    def __init__(self, steps_probs):
+        self._steps_probs = steps_probs
+        self._joint = presence_prob_table(steps_probs)
+
+    def sample(self):
+        pass
+
+    def prob(self, samples):
+        return sample_from_tensor(self._joint, samples)
+
+    def log_prob(self, samples):
+        return tf.log(self.prob(samples))
+
+
+
+
+

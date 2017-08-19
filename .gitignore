@@ -102,3 +102,4 @@ ENV/
 .idea
 data/
 results
+.DS_Store
