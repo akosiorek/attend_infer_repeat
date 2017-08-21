@@ -142,6 +142,7 @@ class AIRCell(snt.RNNCore):
         return [
             np.prod(self._img_size),        # image
             np.prod(self._img_size),        # canvas
+            np.prod(self._img_size),        # explainability
             self._n_latent,                 # what
             self._n_transform_param,        # where
             self._transition.state_size,    # hidden state of the rnn
@@ -163,13 +164,17 @@ class AIRCell(snt.RNNCore):
         flat_canvas = tf.reshape(self._canvas, (1, self._n_pix))
 
         where_code, what_code, flat_canvas = (tf.tile(i, (batch_size, 1)) for i in (where_code, what_code, flat_canvas))
+        # flat_explain = tf.zeros_like(flat_canvas)
 
         flat_img = tf.reshape(img, (batch_size, self._n_pix))
         init_presence = tf.ones((batch_size, 1), dtype=tf.float32)
-        return [flat_img, flat_canvas, what_code, where_code, hidden_state, init_presence]
+        return [flat_img, flat_canvas,
+                # flat_explain,
+                what_code, where_code, hidden_state, init_presence]
 
     def _build(self, inpt, state):
 
+        # img_flat, canvas_flat, explain_flat, what_code, where_code, hidden_state, presence = state
         img_flat, canvas_flat, what_code, where_code, hidden_state, presence = state
         img = tf.reshape(img_flat, (-1,) + tuple(self._img_size))
 
@@ -191,12 +196,15 @@ class AIRCell(snt.RNNCore):
             presence_logit = presence_model(hidden_output) + self._presence_bias
             presence_prob = tf.nn.sigmoid(presence_logit)
 
+            # if self._explore_eps is not None:
+            #     presence_prob = self._explore_eps + (1. - 2 * self._explore_eps) * presence_prob
+
             if self._explore_eps is not None:
-                presence_prob = self._explore_eps + (1. - 2 * self._explore_eps) * presence_prob
+                clipped_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
+                presence_prob = tf.stop_gradient(clipped_prob - presence_prob) + presence_prob
+                # presence_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
 
             if self._sample_presence:
-                # if self._explore_eps is not None:
-                #     presence_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
                 presence_distrib = Bernoulli(probs=presence_prob, dtype=tf.float32,
                                              validate_args=self._debug, allow_nan_stats=not self._debug)
 
@@ -217,14 +225,32 @@ class AIRCell(snt.RNNCore):
         decoded = self._decoder(what_code)
         inversed = self._inverse_transformer(decoded, where_code)
 
+        # with tf.variable_scope('novelty'):
+        #     explained_now = self._inverse_transformer(tf.ones_like(decoded), where_code)
+        #     explained_now = tf.cast(explained_now, tf.bool)
+        #
+        #     explained = tf.reshape(explain_flat, tf.shape(explained_now))
+        #     explained = tf.cast(explained, tf.bool)
+        #
+        #     explained_new = tf.logical_or(explained, explained_now)
+        #     explained_new_flat = tf.reshape(tf.to_float(explained_new), tf.shape(explain_flat))
+        #
+        #     novelty_neg = tf.logical_or(tf.logical_not(explained_new), explained)
+        #     novelty = tf.logical_not(novelty_neg)
+        #     novelty = tf.to_float(novelty)
+        #     novelty_flat = tf.reshape(novelty, tf.shape(explain_flat))
+
+
         with tf.variable_scope('rnn_outputs'):
             inversed_flat = tf.reshape(inversed, (-1, self._n_pix))
 
-            canvas_flat = canvas_flat + presence * inversed_flat
+            canvas_flat = canvas_flat + presence * inversed_flat# * novelty_flat
             decoded_flat = tf.reshape(decoded, (-1, np.prod(self._crop_size)))
 
         output = [canvas_flat, decoded_flat, what_code, what_loc, what_scale, where_code, presence_prob, presence]
-        state = [img_flat, canvas_flat, what_code, where_code, hidden_state, presence]
+        state = [img_flat, canvas_flat,
+                 # explained_new_flat,
+                 what_code, where_code, hidden_state, presence]
         return output, state
 
 

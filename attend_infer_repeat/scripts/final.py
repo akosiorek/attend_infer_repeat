@@ -14,7 +14,6 @@ from tensorflow.contrib.distributions.python.ops.kullback_leibler import kl as _
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-get_ipython().magic(u'matplotlib inline')
 
 from neurocity import minimize_clipped
 from neurocity.tools.params import num_trainable_params
@@ -38,7 +37,7 @@ n_hidden = 256
 n_steps = 3
 
 results_dir = '../results'
-run_name = 'test'
+run_name = 'final'
 
 logdir = osp.join(results_dir, run_name)
 checkpoint_name = osp.join(logdir, 'model.ckpt')
@@ -420,11 +419,11 @@ for train_itr in xrange(train_itr+1, int(1e7)):
         summaries = sess.run(all_summaries)
         summary_writer.add_summary(summaries, train_itr)
         
-    if train_itr % 2000 == 0:
+    if train_itr % 10000 == 0:
         log(train_itr)
         
-    if train_itr % 2000 == 0:
-#         saver.save(sess, checkpoint_name, global_step=train_itr)
+    if train_itr % 10000 == 0:
+        saver.save(sess, checkpoint_name, global_step=train_itr)
         make_fig(logdir, train_itr)    
     
 #     if train_itr % 1000 == 0:
