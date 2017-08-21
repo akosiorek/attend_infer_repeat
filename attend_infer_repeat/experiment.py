@@ -1,7 +1,7 @@
 
 # coding: utf-8
 
-# In[ ]:
+# In[1]:
 
 from os import path as osp
 import numpy as np
@@ -26,7 +26,7 @@ from ops import Loss
 from prior import geometric_prior, presence_prob_table, tabular_kl, NumStepsDistribution
 
 
-# In[ ]:
+# In[2]:
 
 learning_rate = 1e-4
 batch_size = 64
@@ -44,29 +44,29 @@ checkpoint_name = osp.join(logdir, 'model.ckpt')
 axes = {'imgs': 0, 'labels': 0, 'nums': 1}
 
 
-# In[ ]:
+# In[3]:
 
 prior_weight = .3 ** 2
 
-num_steps_prior = 0.
-latent_code_prior = 0.
+num_steps_prior = 5e-2
+latent_code_prior = dict(loc=0., scale=1.)
 
 use_reinforce = True
 sample_presence = True
 presence_bias = 0.
 
-init_explore_eps = .0
+init_explore_eps = .05
 
 l2_weight = 1e-5
 
 
-# In[ ]:
+# In[4]:
 
 test_data = load_data('mnist_test.pickle')
 train_data = load_data('mnist_train.pickle')
 
 
-# In[ ]:
+# In[5]:
 
 tf.reset_default_graph()
 train_tensors = tensors_from_data(train_data, batch_size, axes, shuffle=True)
@@ -91,13 +91,11 @@ initial_state = air.initial_state(x)
 
 dummy_sequence = tf.zeros((n_steps, batch_size, 1), name='dummy_sequence')
 outputs, state = tf.nn.dynamic_rnn(air, dummy_sequence, initial_state=initial_state, time_major=True)
-canvas, cropped, what, what_loc, what_scale, where, presence_logit, presence = outputs
-presence_prob = tf.nn.sigmoid(presence_logit)
+canvas, cropped, what, what_loc, what_scale, where, presence_prob, presence = outputs
 
 with tf.variable_scope('notebook'):
     cropped = tf.reshape(presence * tf.nn.sigmoid(cropped), (n_steps, batch_size,) + tuple(crop_size))
     canvas = tf.reshape(canvas, (n_steps, batch_size,) + tuple(img_size))
-    prob_canvas = canvas
     final_canvas = canvas[-1]
     
     
@@ -116,12 +114,12 @@ with tf.variable_scope('baseline'):
     baseline_mean = tf.reduce_mean(baseline)
 
 
-# In[ ]:
+# In[6]:
 
 print num_trainable_params()
 
 
-# In[ ]:
+# In[7]:
 
 ###    Loss #################################################################################
 loss = Loss()
@@ -130,7 +128,6 @@ train_step = []
 lr_tensor = tf.Variable(learning_rate, name='learning_rate', trainable=False)
 
 ###    Reconstruction Loss ##################################################################
-# rec_loss_per_sample = tf.nn.sigmoid_cross_entropy_with_logits(labels=x, logits=final_canvas)
 rec_loss_per_sample = (x - final_canvas) ** 2
 
 rec_loss_per_sample = tf.reduce_sum(rec_loss_per_sample, axis=(1, 2))
@@ -145,7 +142,7 @@ num_step = tf.reduce_mean(num_step_per_sample)
 if prior_weight > 0.:
     
     if num_steps_prior is not None:  
-        prior = geometric_prior(.25, 3)
+        prior = geometric_prior(num_steps_prior, 3)
         posterior_probs = tf.transpose(tf.squeeze(presence_prob))
         presence_tabular_distrib = presence_prob_table(posterior_probs)
         
@@ -156,18 +153,17 @@ if prior_weight > 0.:
         tf.summary.scalar('num_steps_prior_loss', num_steps_prior_loss)
         prior_loss.add(num_steps_prior_loss, num_steps_prior_loss_per_sample)
 
-    if latent_code_prior is not None:
-#         latent_code_prior_loss_per_sample = tf.reduce_sum((what - latent_code_prior) ** 2, -1) * tf.squeeze(presence)
-#         latent_code_prior_loss_per_sample = tf.reduce_sum(latent_code_prior_loss_per_sample, 0) / div
-#         
+    if latent_code_prior is not None:        
+        prior = Normal(latent_code_prior['loc'], latent_code_prior['scale'])
         posterior = NormalWithSoftplusScale(what_loc, what_scale)
-        prior = Normal(0., 1.)
+        
         what_kl = _kl(posterior, prior)
         what_kl = tf.reduce_sum(what_kl, -1, keep_dims=True) * presence
         latent_code_prior_loss_per_sample = tf.squeeze(tf.reduce_sum(what_kl, 0))
-#         latent_code_prior_loss_per_sample = tf.reduce_sum(what_kl, -1, keep_dims=True)
     
-        latent_code_prior_loss = tf.reduce_mean(latent_code_prior_loss_per_sample)
+        n_samples_with_encoding = tf.reduce_sum(tf.to_float(tf.greater(num_step_per_sample, 0.)))
+        div = tf.maximum(n_samples_with_encoding, 1.)
+        latent_code_prior_loss = tf.reduce_sum(latent_code_prior_loss_per_sample) / div
         tf.summary.scalar('latent_code_prior_loss', latent_code_prior_loss)
         prior_loss.add(latent_code_prior_loss, latent_code_prior_loss_per_sample)
 
@@ -181,15 +177,15 @@ if use_reinforce:
 #     clipped_presence_prob = tf.clip_by_value(presence_prob, 1e-7, 1. - 1e-7)
 #     log_prob = Bernoulli(probs=clipped_presence_prob).log_prob(presence)
 #     log_prob = tf.squeeze(tf.reduce_mean(log_prob, 0))
-    clipped_presence_prob = tf.clip_by_value(posterior_probs, 1e-7, 1. - 1e-7)
-    num_steps_distrib = NumStepsDistribution(clipped_presence_prob)
+
+#     clipped_presence_prob = tf.clip_by_value(posterior_probs, 1e-7, 1. - 1e-7)
+#     num_steps_distrib = NumStepsDistribution(clipped_presence_prob)
+    num_steps_distrib = NumStepsDistribution(posterior_probs)
     log_prob = num_steps_distrib.log_prob(num_step_per_sample)
+    log_prob = tf.clip_by_value(log_prob, -1e32, 1e32)
 
     
 #     log_prob *= -1 # cause we're maximising
-    
-#     # instead of maximising probability we'll minimise cross-entropy, where labels are the taken actions
-#     log_prob = tf.nn.sigmoid_cross_entropy_with_logits(labels=presence, logits=presence_logit)
 
     importance_weight = loss._per_sample
     importance_weight -= baseline
@@ -234,11 +230,16 @@ gradient_summaries(gvs)
 
 
 ###    Metrics #################################################################################
-gt_num = tf.reduce_sum(y, 0)
+gt_num = tf.squeeze(tf.reduce_sum(y, 0))
 num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(gt_num, num_step_per_sample)))
 
 
-# In[ ]:
+# In[8]:
+
+print what_kl.get_shape()
+
+
+# In[9]:
 
 vs = tf.trainable_variables()
 gs = tf.gradients(opt_loss, vs)
@@ -252,7 +253,7 @@ for v, g in zip(vs, gs):
 named_grads = {v.name: g for v, g in zip(vs, gs) if g is not None}
 
 
-# In[ ]:
+# In[10]:
 
 def grad_variance(n=10, sort_by_var=True):
     gs = {k: [] for k in named_grads}
@@ -278,7 +279,7 @@ def print_grad_variance():
     print
 
 
-# In[ ]:
+# In[11]:
 
 config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
@@ -288,20 +289,30 @@ sess.run(tf.global_variables_initializer())
 all_summaries = tf.summary.merge_all()
 
 
-# In[ ]:
+# In[12]:
 
 summary_writer = tf.summary.FileWriter(logdir, sess.graph)
 saver = tf.train.Saver()
 
 
-# In[ ]:
+# In[13]:
+
+# import os
+
+# restore_dir = '/Users/adam/code/attend_infer_repeat/results/galactus/fixed_test_distrib_exp_5e-2'
+# restore_step = 1590000
+# restore_path = os.path.join(restore_dir, 'model.ckpt-{}'.format(restore_step))
+# saver.restore(sess, restore_path)
+
+
+# In[14]:
 
 imgs = train_data['imgs']
 presence_gt = train_data['nums']
 train_itr = -1
 
 
-# In[ ]:
+# In[15]:
 
 from matplotlib.patches import Rectangle
 def rect(bbox, c=None, facecolor='none', label=None, ax=None):
@@ -321,12 +332,12 @@ def rect_stn(ax, width, height, w, c=None):
 
 
 def make_fig(checkpoint_dir=None, global_step=None):
-    xx, pred_canvas, pred_crop, prob, pres, w = sess.run([x, prob_canvas, cropped, presence_tabular_distrib[..., 1:], presence, where])
+    xx, pred_canvas, pred_crop, prob, pres, w = sess.run([x, canvas, cropped, presence_tabular_distrib[..., 1:], presence, where])
     height, width = xx.shape[1:]
     
     max_imgs = 10
     bs = min(max_imgs, batch_size)
-    scale = 1.
+    scale = 1.5
     figsize = scale * np.asarray((bs, 2 * n_steps + 1))
     fig, axes = plt.subplots(2 * n_steps + 1, bs, figsize=figsize)
 
@@ -342,7 +353,7 @@ def make_fig(checkpoint_dir=None, global_step=None):
     for i, ax_row in enumerate(axes[1+n_steps:]):
         for j, ax in enumerate(ax_row):
             ax.imshow(pred_crop[i, j], cmap='gray')#, vmin=0, vmax=1)
-            ax.set_title('{:d} with prob {:.02f}'.format(int(pres[i, j, 0]), prob[j, i].squeeze()), fontsize=4*scale)
+            ax.set_title('{:d} with p({:d}) = {:.02f}'.format(int(pres[i, j, 0]), i+1, prob[j, i].squeeze()), fontsize=4*scale)
 
     for ax in axes.flatten():
         ax.xaxis.set_visible(False)
@@ -354,7 +365,7 @@ def make_fig(checkpoint_dir=None, global_step=None):
         plt.close('all')
 
 
-# In[ ]:
+# In[16]:
 
 exprs = {
     'loss': loss.value,
@@ -385,6 +396,7 @@ test_log = make_expr_logger(sess, summary_writer, test_data['imgs'].shape[0] / b
 def log(train_itr):
     train_log(train_itr)
     test_log(train_itr)
+    print
 
 
 # In[ ]:
@@ -399,9 +411,15 @@ for train_itr in xrange(train_itr+1, int(1e7)):
         summaries = sess.run(all_summaries)
         summary_writer.add_summary(summaries, train_itr)
         
-    if train_itr % 5000 == 0:
+    if train_itr % 10000 == 0:
         log(train_itr)
         
     if train_itr % 10000 == 0:
-        saver.save(sess, checkpoint_name, global_step=train_itr)
+         saver.save(sess, checkpoint_name, global_step=train_itr)
         make_fig(logdir, train_itr)    
+
+
+# In[ ]:
+
+make_fig()
+

@@ -10,12 +10,16 @@ default_init = {
     'b': tf.truncated_normal_initializer(stddev=1e-2)}
 
 
-def eps_explore(samples, eps):
-    shape = tf.shape(samples)
-    do_explore = tf.less(tf.random_uniform(shape), tf.ones(shape, dtype=tf.float32) * eps)
-    random = tf.cast(tf.round(tf.random_uniform(shape)), samples.dtype)
-    samples = tf.where(do_explore, random, samples)
-    return samples
+def epsilon_greedy(events, eps):
+    shape = tf.shape(events)
+    do_explore = tf.less(tf.random_uniform(shape, dtype=tf.float32), tf.ones(shape, dtype=tf.float32) * eps)
+    random = tf.cast(tf.round(tf.random_uniform(shape, dtype=tf.float32)), events.dtype)
+    # events = tf.where(do_explore, random, events)
+
+    do_explore = tf.to_float(do_explore)
+    events = do_explore * random + (1. - do_explore) * events
+
+    return events
 
 
 class TransformParam(snt.AbstractModule):
@@ -116,10 +120,6 @@ class AIRCell(snt.RNNCore):
         self._debug = debug
 
         with self._enter_variable_scope():
-            #
-            # self._canvas = snt.TrainableVariable(self._img_size, dtype=tf.float32, name='initial_canvas',
-            #                                      initializers={'w': tf.constant_initializer(-10.)})
-
             self._canvas = tf.zeros(self._img_size, dtype=tf.float32)
             if canvas_init is not None:
                 self._canvas_value = tf.get_variable('canvas_value', dtype=tf.float32, initializer=canvas_init)
@@ -148,7 +148,6 @@ class AIRCell(snt.RNNCore):
             1,                              # presence
         ]
 
-
     @property
     def output_size(self):
         return [np.prod(self._img_size), np.prod(self._crop_size), self._n_latent, self._n_latent, self._n_latent, self._n_transform_param, 1, 1]
@@ -162,7 +161,6 @@ class AIRCell(snt.RNNCore):
         what_code = tf.get_variable('what_init', shape=[1, self._n_latent], dtype=tf.float32)
 
         flat_canvas = tf.reshape(self._canvas, (1, self._n_pix))
-        # flat_canvas = tf.zeros((1, self._n_pix), dtype=tf.float32)
 
         where_code, what_code, flat_canvas = (tf.tile(i, (batch_size, 1)) for i in (where_code, what_code, flat_canvas))
 
@@ -193,15 +191,18 @@ class AIRCell(snt.RNNCore):
             presence_logit = presence_model(hidden_output) + self._presence_bias
             presence_prob = tf.nn.sigmoid(presence_logit)
 
+            if self._explore_eps is not None:
+                presence_prob = self._explore_eps + (1. - 2 * self._explore_eps) * presence_prob
+
             if self._sample_presence:
-                if self._explore_eps is not None:
-                    presence_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
+                # if self._explore_eps is not None:
+                #     presence_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
                 presence_distrib = Bernoulli(probs=presence_prob, dtype=tf.float32,
                                              validate_args=self._debug, allow_nan_stats=not self._debug)
 
                 new_presence = presence_distrib.sample()
-                #if self._explore_eps is not None:
-                #    new_presence = eps_explore(presence, self._explore_eps)
+                # if self._explore_eps is not None:
+                #    new_presence = epsilon_greedy(presence, self._explore_eps)
                 presence *= new_presence
 
             else:
@@ -213,7 +214,7 @@ class AIRCell(snt.RNNCore):
                                                 validate_args=self._debug, allow_nan_stats=not self._debug)
         what_code = what_distrib.sample()
 
-        decoded = self._decoder(what_code) #* 1e-2
+        decoded = self._decoder(what_code)
         inversed = self._inverse_transformer(decoded, where_code)
 
         with tf.variable_scope('rnn_outputs'):
@@ -222,7 +223,7 @@ class AIRCell(snt.RNNCore):
             canvas_flat = canvas_flat + presence * inversed_flat
             decoded_flat = tf.reshape(decoded, (-1, np.prod(self._crop_size)))
 
-        output = [canvas_flat, decoded_flat, what_code, what_loc, what_scale, where_code, presence_logit, presence]
+        output = [canvas_flat, decoded_flat, what_code, what_loc, what_scale, where_code, presence_prob, presence]
         state = [img_flat, canvas_flat, what_code, where_code, hidden_state, presence]
         return output, state
 
