@@ -7,7 +7,8 @@ from tensorflow.contrib.distributions import Bernoulli, NormalWithSoftplusScale
 
 default_init = {
     'w': tf.uniform_unit_scaling_initializer(),
-    'b': tf.truncated_normal_initializer(stddev=1e-2)}
+    'b': tf.truncated_normal_initializer(stddev=1e-2)
+}
 
 
 def epsilon_greedy(events, eps):
@@ -29,19 +30,45 @@ class TransformParam(snt.AbstractModule):
         self._n_param = n_param
         self._max_crop_size = max_crop_size
 
-    def _build(self, inpt):
-
+    def _embed(self, inpt):
         flat = snt.BatchFlatten()
         linear1 = snt.Linear(20, initializers=default_init)
-        linear2 = snt.Linear(self._n_param, initializers=default_init)
+
+        # init = {
+        #     'w': tf.uniform_unit_scaling_initializer(.1),
+        #     'b': tf.zeros_initializer()
+        # }
+        init = default_init
+        linear2 = snt.Linear(self._n_param, initializers=init)
         seq = snt.Sequential([flat, linear1, tf.nn.elu, linear2])
         output = seq(inpt)
-        output *= 1e-4
-        sx, tx, sy, ty = tf.split(output, 4, 1)
-        sx, sy = (.5e-4 + (1 - 1e-4) * self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
+        return output
+
+    def _transform(self, inpt):
+        # output *= 1e-4
+        sx, tx, sy, ty = tf.split(inpt, 4, 1)
+        # sx, sy = (.5e-4 + (1 - 1e-4) * self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
+        sx, sy = (self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
         tx, ty = (tf.nn.tanh(t) for t in (tx, ty))
         output = tf.concat((sx, tx, sy, ty), -1)
         return output
+
+    def _build(self, inpt):
+        embedding = self._build(inpt)
+        return self._transform(embedding)
+
+
+class StochasticTransformParam(TransformParam):
+    def __init__(self, n_param, max_crop_size=1.0, scale_bias=-2.):
+        super(StochasticTransformParam, self).__init__(n_param * 2, max_crop_size)
+        self._scale_bias = scale_bias
+
+    def _build(self, inpt):
+        embedding = self._embed(inpt)
+        n_params = self._n_param / 2
+        locs = self._transform(embedding[..., :n_params])
+        scales = embedding[..., n_params:]
+        return locs, scales + self._scale_bias
 
 
 class Encoder(snt.AbstractModule):
@@ -127,7 +154,8 @@ class AIRCell(snt.RNNCore):
 
             transform_constraints = snt.AffineWarpConstraints.no_shear_2d()
 
-            self._transform_param = TransformParam(self._n_transform_param, max_crop_size)
+            # self._transform_param = TransformParam(self._n_transform_param, max_crop_size)
+            self._transform_param = StochasticTransformParam(self._n_transform_param, max_crop_size)
 
             self._spatial_transformer = SpatialTransformer(img_size, crop_size, transform_constraints)
             self._input_encoder = Encoder(self._transition.output_size[0])
@@ -151,7 +179,18 @@ class AIRCell(snt.RNNCore):
 
     @property
     def output_size(self):
-        return [np.prod(self._img_size), np.prod(self._crop_size), self._n_latent, self._n_latent, self._n_latent, self._n_transform_param, 1, 1]
+        return [
+            np.prod(self._img_size),    # canvas
+            np.prod(self._crop_size),   # crop
+            self._n_latent,             # what code
+            self._n_latent,             # what loc
+            self._n_latent,             # what scale
+            self._n_transform_param,    # where code
+            self._n_transform_param,    # where loc
+            self._n_transform_param,    # where scale
+            1,                          # presence prob
+            1                           # presence
+                ]
 
     def initial_state(self, img):
         batch_size = img.get_shape().as_list()[0]
@@ -187,7 +226,11 @@ class AIRCell(snt.RNNCore):
             rnn_inpt = tf.nn.elu(rnn_inpt)
             hidden_output, hidden_state = self._transition(rnn_inpt, hidden_state)
 
-        where_code = self._transform_param(hidden_output)
+        where_loc, where_scale = self._transform_param(hidden_output)
+        where_distrib = NormalWithSoftplusScale(where_loc, where_scale,
+                                                validate_args=self._debug, allow_nan_stats=not self._debug)
+        where_code = where_distrib.sample()
+
         cropped = self._spatial_transformer(img, where_code)
 
         with tf.variable_scope('presence'):
@@ -247,7 +290,7 @@ class AIRCell(snt.RNNCore):
             canvas_flat = canvas_flat + presence * inversed_flat# * novelty_flat
             decoded_flat = tf.reshape(decoded, (-1, np.prod(self._crop_size)))
 
-        output = [canvas_flat, decoded_flat, what_code, what_loc, what_scale, where_code, presence_prob, presence]
+        output = [canvas_flat, decoded_flat, what_code, what_loc, what_scale, where_code, where_loc, where_scale, presence_prob, presence]
         state = [img_flat, canvas_flat,
                  # explained_new_flat,
                  what_code, where_code, hidden_state, presence]
@@ -270,7 +313,7 @@ if __name__ == '__main__':
 
     dummy_sequence = tf.zeros((n_steps, batch_size, 1), name='dummy_sequence')
     outputs, state = tf.nn.dynamic_rnn(air, dummy_sequence, initial_state=initial_state, time_major=True)
-    canvas, crop, what, what_loc, what_scale, where, presence_logit, presence = outputs
+    canvas, crop, what, what_loc, what_scale, where, where_loc, where_scale, presence_prob, presence = outputs
 
     canvas = tf.reshape(canvas, (n_steps, batch_size,) + tuple(img_size))
     final_canvas = canvas[-1]

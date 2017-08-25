@@ -3,10 +3,17 @@ import tensorflow as tf
 
 
 def geometric_prior(success_prob, n_steps):
-    assert (.0 < success_prob < 1.), 'Success probability has to be within (0., 1.)'
-    probs = [1. - success_prob] + [success_prob ** i for i in xrange(1, n_steps + 1)]
-    probs = np.asarray(probs, dtype=np.float32)
-    probs /= probs.sum()
+    if isinstance(success_prob, tf.Tensor):
+        prob0 = 1 - success_prob
+        probs = tf.ones(n_steps, dtype=tf.float32) * success_prob
+        probs = tf.cumprod(probs)
+        probs = tf.concat(([prob0], probs), 0)
+        probs /= tf.reduce_sum(probs)
+    else:
+        assert (.0 < success_prob < 1.), 'Success probability has to be within (0., 1.)'
+        probs = [1. - success_prob] + [success_prob ** i for i in xrange(1, n_steps + 1)]
+        probs = np.asarray(probs, dtype=np.float32)
+        probs /= probs.sum()
     return probs
 
 

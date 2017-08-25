@@ -187,7 +187,7 @@ if use_reinforce:
 #     log_prob *= -1 # cause we're maximising
     
 #     # instead of maximising probability we'll minimise cross-entropy, where labels are the taken actions
-#     log_prob = tf.nn.sigmoid_cross_entropy_with_logits(labels=presence, logits=presence_logit)
+#     log_prob = tf.nn.sigmoid_cross_entropy_with_logits(labels=presence, logits=presence_prob)
 
     importance_weight = loss._per_sample
     importance_weight -= baseline

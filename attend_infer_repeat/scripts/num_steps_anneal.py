@@ -38,7 +38,7 @@ n_hidden = 256
 n_steps = 3
 
 results_dir = '../results'
-run_name = 'test'
+run_name = 'num_steps_anneal'
 
 logdir = osp.join(results_dir, run_name)
 checkpoint_name = osp.join(logdir, 'model.ckpt')
