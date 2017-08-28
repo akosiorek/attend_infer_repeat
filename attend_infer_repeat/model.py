@@ -1,341 +1,239 @@
-import numpy as  np
 import tensorflow as tf
-import sonnet as snt
-
-from tensorflow.contrib.distributions import Bernoulli, NormalWithSoftplusScale
-
-
-default_init = {
-    'w': tf.uniform_unit_scaling_initializer(),
-    'b': tf.truncated_normal_initializer(stddev=1e-2)
-}
-
-
-def epsilon_greedy(events, eps):
-    shape = tf.shape(events)
-    do_explore = tf.less(tf.random_uniform(shape, dtype=tf.float32), tf.ones(shape, dtype=tf.float32) * eps)
-    random = tf.cast(tf.round(tf.random_uniform(shape, dtype=tf.float32)), events.dtype)
-    # events = tf.where(do_explore, random, events)
-
-    do_explore = tf.to_float(do_explore)
-    events = do_explore * random + (1. - do_explore) * events
-
-    return events
-
-
-class TransformParam(snt.AbstractModule):
-
-    def __init__(self, n_param, max_crop_size=1.0):
-        super(TransformParam, self).__init__(self.__class__.__name__)
-        self._n_param = n_param
-        self._max_crop_size = max_crop_size
-
-    def _embed(self, inpt):
-        flat = snt.BatchFlatten()
-        linear1 = snt.Linear(20, initializers=default_init)
-
-        # init = {
-        #     'w': tf.uniform_unit_scaling_initializer(.1),
-        #     'b': tf.zeros_initializer()
-        # }
-        init = default_init
-        linear2 = snt.Linear(self._n_param, initializers=init)
-        seq = snt.Sequential([flat, linear1, tf.nn.elu, linear2])
-        output = seq(inpt)
-        return output
-
-    def _transform(self, inpt):
-        # output *= 1e-4
-        sx, tx, sy, ty = tf.split(inpt, 4, 1)
-        # sx, sy = (.5e-4 + (1 - 1e-4) * self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
-        sx, sy = (self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
-        tx, ty = (tf.nn.tanh(t) for t in (tx, ty))
-        output = tf.concat((sx, tx, sy, ty), -1)
-        return output
-
-    def _build(self, inpt):
-        embedding = self._build(inpt)
-        return self._transform(embedding)
-
-
-class StochasticTransformParam(TransformParam):
-    def __init__(self, n_param, max_crop_size=1.0, scale_bias=-2.):
-        super(StochasticTransformParam, self).__init__(n_param * 2, max_crop_size)
-        self._scale_bias = scale_bias
-
-    def _build(self, inpt):
-        embedding = self._embed(inpt)
-        n_params = self._n_param / 2
-        locs = self._transform(embedding[..., :n_params])
-        scales = embedding[..., n_params:]
-        return locs, scales + self._scale_bias
-
-
-class Encoder(snt.AbstractModule):
-
-    def __init__(self, n_latent):
-        super(Encoder, self).__init__(self.__class__.__name__)
-        self._n_latent = n_latent
-
-    def _build(self, inpt):
-        flat = snt.BatchFlatten()
-        linear1 = snt.Linear(100, initializers=default_init)
-        linear2 = snt.Linear(self._n_latent, initializers=default_init)
-        seq = snt.Sequential([flat, linear1, tf.nn.elu, linear2, tf.nn.elu])
-        return seq(inpt)
-
-
-class StochasticEncoder(Encoder):
-    def _build(self, inpt):
-        inpt = super(StochasticEncoder, self)._build(inpt)
-        linear = snt.Linear(self._n_latent * 2, initializers=default_init)
-        output = linear(inpt)
-        loc, scale = output[..., :self._n_latent], output[..., self._n_latent:]
-        return loc, scale
-
-
-class Decoder(snt.AbstractModule):
-
-    def __init__(self, output_size):
-        super(Decoder, self).__init__(self.__class__.__name__)
-        self._output_size = output_size
-
-    def _build(self, inpt):
-        n = np.prod(self._output_size)
-        linear1 = snt.Linear(100, initializers=default_init)
-        linear2 = snt.Linear(n, initializers=default_init)
-        reshape = snt.BatchReshape(self._output_size)
-        seq = snt.Sequential([linear1, tf.nn.elu, linear2, reshape])
-        return seq(inpt)
-
-
-class SpatialTransformer(snt.AbstractModule):
-
-    def __init__(self, img_size, crop_size, constraints=None, inverse=False):
-        super(SpatialTransformer, self).__init__(self.__class__.__name__)
-
-        with self._enter_variable_scope():
-            self._warper = snt.AffineGridWarper(img_size, crop_size, constraints)
-            if inverse:
-                self._warper = self._warper.inverse()
-
-    def _build(self, img, transform_params):
-        if len(img.get_shape()) == 3:
-            img = img[..., tf.newaxis]
-
-        grid_coords = self._warper(transform_params)
-        return snt.resampler(img, grid_coords)
-
-
-class AIRCell(snt.RNNCore):
-    _n_transform_param = 4
-
-    def __init__(self, img_size, crop_size, n_latent, transition, max_crop_size=1.0,
-                 sample_presence=True, canvas_init=-10., presence_bias=0., explore_eps=None, debug=False):
-
-        super(AIRCell, self).__init__(self.__class__.__name__)
-        self._img_size = img_size
-        self._n_pix = np.prod(self._img_size)
-        self._crop_size = crop_size
-        self._n_latent = n_latent
-        self._transition = transition
-        self._n_hidden = self._transition.output_size[0]
-
-        self._sample_presence = sample_presence
-        self._presence_bias = presence_bias
-        self._explore_eps = explore_eps
-        self._debug = debug
-
-        with self._enter_variable_scope():
-            self._canvas = tf.zeros(self._img_size, dtype=tf.float32)
-            if canvas_init is not None:
-                self._canvas_value = tf.get_variable('canvas_value', dtype=tf.float32, initializer=canvas_init)
-                self._canvas += self._canvas_value
-
-            transform_constraints = snt.AffineWarpConstraints.no_shear_2d()
-
-            # self._transform_param = TransformParam(self._n_transform_param, max_crop_size)
-            self._transform_param = StochasticTransformParam(self._n_transform_param, max_crop_size)
-
-            self._spatial_transformer = SpatialTransformer(img_size, crop_size, transform_constraints)
-            self._input_encoder = Encoder(self._transition.output_size[0])
-            # self._encoder = Encoder(n_latent)
-            self._encoder = StochasticEncoder(n_latent)
-
-            self._decoder = Decoder(crop_size)
-            self._inverse_transformer = SpatialTransformer(img_size, crop_size, transform_constraints, inverse=True)
-
-    @property
-    def state_size(self):
-        return [
-            np.prod(self._img_size),        # image
-            np.prod(self._img_size),        # canvas
-            np.prod(self._img_size),        # explainability
-            self._n_latent,                 # what
-            self._n_transform_param,        # where
-            self._transition.state_size,    # hidden state of the rnn
-            1,                              # presence
-        ]
-
-    @property
-    def output_size(self):
-        return [
-            np.prod(self._img_size),    # canvas
-            np.prod(self._crop_size),   # crop
-            self._n_latent,             # what code
-            self._n_latent,             # what loc
-            self._n_latent,             # what scale
-            self._n_transform_param,    # where code
-            self._n_transform_param,    # where loc
-            self._n_transform_param,    # where scale
-            1,                          # presence prob
-            1                           # presence
-                ]
-
-    def initial_state(self, img):
-        batch_size = img.get_shape().as_list()[0]
-        hidden_state = self._transition.initial_state(batch_size, tf.float32, trainable=True)
-
-        where_code = tf.get_variable('where_init', shape=[1, self._n_transform_param], dtype=tf.float32)
-
-        what_code = tf.get_variable('what_init', shape=[1, self._n_latent], dtype=tf.float32)
-
-        flat_canvas = tf.reshape(self._canvas, (1, self._n_pix))
-
-        where_code, what_code, flat_canvas = (tf.tile(i, (batch_size, 1)) for i in (where_code, what_code, flat_canvas))
-        # flat_explain = tf.zeros_like(flat_canvas)
-
-        flat_img = tf.reshape(img, (batch_size, self._n_pix))
-        init_presence = tf.ones((batch_size, 1), dtype=tf.float32)
-        return [flat_img, flat_canvas,
-                # flat_explain,
-                what_code, where_code, hidden_state, init_presence]
-
-    def _build(self, inpt, state):
-
-        # img_flat, canvas_flat, explain_flat, what_code, where_code, hidden_state, presence = state
-        img_flat, canvas_flat, what_code, where_code, hidden_state, presence = state
-        img = tf.reshape(img_flat, (-1,) + tuple(self._img_size))
-
-        inpt_encoding = img
-        inpt_encoding = self._input_encoder(inpt_encoding)
-
-        with tf.variable_scope('rnn_inpt'):
-            rnn_inpt = tf.concat((inpt_encoding, what_code, where_code, presence), -1)
-            rnn_inpt = snt.Linear(self._n_hidden, initializers=default_init)(rnn_inpt)
-            rnn_inpt = tf.nn.elu(rnn_inpt)
-            hidden_output, hidden_state = self._transition(rnn_inpt, hidden_state)
-
-        where_loc, where_scale = self._transform_param(hidden_output)
-        where_distrib = NormalWithSoftplusScale(where_loc, where_scale,
-                                                validate_args=self._debug, allow_nan_stats=not self._debug)
-        where_code = where_distrib.sample()
-
-        cropped = self._spatial_transformer(img, where_code)
-
-        with tf.variable_scope('presence'):
-            presence_model = snt.Linear(self._n_latent, initializers=default_init), tf.nn.elu, snt.Linear(1, initializers=default_init)
-            presence_model = snt.Sequential(presence_model)
-            presence_logit = presence_model(hidden_output) + self._presence_bias
-            presence_prob = tf.nn.sigmoid(presence_logit)
-
-            # if self._explore_eps is not None:
-            #     presence_prob = self._explore_eps + (1. - 2 * self._explore_eps) * presence_prob
-
-            if self._explore_eps is not None:
-                clipped_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
-                presence_prob = tf.stop_gradient(clipped_prob - presence_prob) + presence_prob
-                # presence_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
-
-            if self._sample_presence:
-                presence_distrib = Bernoulli(probs=presence_prob, dtype=tf.float32,
-                                             validate_args=self._debug, allow_nan_stats=not self._debug)
-
-                new_presence = presence_distrib.sample()
-                # if self._explore_eps is not None:
-                #    new_presence = epsilon_greedy(presence, self._explore_eps)
-                presence *= new_presence
-
-            else:
-                presence = presence_prob
-
-        # what_code = self._encoder(cropped)
-        what_loc, what_scale = self._encoder(cropped)
-        what_distrib = NormalWithSoftplusScale(what_loc, what_scale,
-                                                validate_args=self._debug, allow_nan_stats=not self._debug)
-        what_code = what_distrib.sample()
-
-        decoded = self._decoder(what_code)
-        inversed = self._inverse_transformer(decoded, where_code)
-
-        # with tf.variable_scope('novelty'):
-        #     explained_now = self._inverse_transformer(tf.ones_like(decoded), where_code)
-        #     explained_now = tf.cast(explained_now, tf.bool)
-        #
-        #     explained = tf.reshape(explain_flat, tf.shape(explained_now))
-        #     explained = tf.cast(explained, tf.bool)
-        #
-        #     explained_new = tf.logical_or(explained, explained_now)
-        #     explained_new_flat = tf.reshape(tf.to_float(explained_new), tf.shape(explain_flat))
-        #
-        #     novelty_neg = tf.logical_or(tf.logical_not(explained_new), explained)
-        #     novelty = tf.logical_not(novelty_neg)
-        #     novelty = tf.to_float(novelty)
-        #     novelty_flat = tf.reshape(novelty, tf.shape(explain_flat))
-
-
-        with tf.variable_scope('rnn_outputs'):
-            inversed_flat = tf.reshape(inversed, (-1, self._n_pix))
-
-            canvas_flat = canvas_flat + presence * inversed_flat# * novelty_flat
-            decoded_flat = tf.reshape(decoded, (-1, np.prod(self._crop_size)))
-
-        output = [canvas_flat, decoded_flat, what_code, what_loc, what_scale, where_code, where_loc, where_scale, presence_prob, presence]
-        state = [img_flat, canvas_flat,
-                 # explained_new_flat,
-                 what_code, where_code, hidden_state, presence]
-        return output, state
-
-
-if __name__ == '__main__':
-    learning_rate = 1e-4
-    batch_size = 10
-    img_size = 50, 50
-    crop_size = 20, 20
-    n_latent = 10
-    n_steps = 3
-
-    x = tf.placeholder(tf.float32, (batch_size,) + img_size, name='inpt')
-
-    transition = snt.GRU(n_latent)
-    air = AIRCell(img_size, crop_size, n_latent, transition)
-    initial_state = air.initial_state(x)
-
-    dummy_sequence = tf.zeros((n_steps, batch_size, 1), name='dummy_sequence')
-    outputs, state = tf.nn.dynamic_rnn(air, dummy_sequence, initial_state=initial_state, time_major=True)
-    canvas, crop, what, what_loc, what_scale, where, where_loc, where_scale, presence_prob, presence = outputs
-
-    canvas = tf.reshape(canvas, (n_steps, batch_size,) + tuple(img_size))
-    final_canvas = canvas[-1]
-
-    loss = tf.nn.l2_loss(x - final_canvas)
-
-    opt = tf.train.AdamOptimizer(learning_rate)
-    train_step = opt.minimize(loss)
-
-    print 'Constructed model'
-
-
-    sess = tf.Session()
-    sess.run(tf.global_variables_initializer())
-
-    xx = np.random.rand(*x.get_shape().as_list())
-    res, l = sess.run([outputs, loss], {x: xx})
-
-    for r in res:
-        print r.shape
-
-    print res
-
-    print 'loss = {}'.format(l)
-    print 'Done'
+from tensorflow.contrib.distributions import Normal
+from tensorflow.contrib.distributions.python.ops.kullback_leibler import kl as _kl
+
+from cell import AIRCell
+from ops import Loss
+from prior import geometric_prior, NumStepsDistribution, tabular_kl
+from tf_tools.eval import gradient_summaries
+
+
+class AIRModel(object):
+    def __init__(self, obs, nums, max_steps, glimpse_size,
+                 n_appearance, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
+                 output_std=1., discrete_steps=True,
+                 step_bias=0., explore_eps=None, debug=False):
+
+        self.obs = obs
+        self.nums = nums
+        self.max_steps = max_steps
+        self.glimpse_size = glimpse_size
+
+        self.n_appearance = n_appearance
+
+        self.output_std = output_std
+        self.discrete_steps = discrete_steps
+        self.step_bias = step_bias
+        self.explore_eps = explore_eps
+        self.debug = debug
+
+        with tf.variable_scope(self.__class__.__name__):
+            shape = self.obs.get_shape().as_list()
+            self.batch_size = shape[0]
+            self.img_size = shape[1:]
+            self._build(transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator)
+
+    def _build(self, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator):
+        if self.explore_eps is not None:
+            self.explore_eps = tf.get_variable('explore_eps', initializer=self.explore_eps, trainable=False)
+
+        air = AIRCell(self.img_size, self.glimpse_size, self.n_appearance, transition,
+                      input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
+                      canvas_init=None,
+                      discrete_steps=self.discrete_steps,
+                      step_bias=self.step_bias,
+                      explore_eps=self.explore_eps,
+                      debug=self.debug)
+
+        initial_state = air.initial_state(self.obs)
+
+        dummy_sequence = tf.zeros((self.max_steps, self.batch_size, 1), name='dummy_sequence')
+        outputs, state = tf.nn.dynamic_rnn(air, dummy_sequence, initial_state=initial_state, time_major=True)
+        for name, output in zip(air.output_names, outputs):
+            setattr(self, name, output)
+        # canvas, glimpse, what, what_loc, what_scale, where, where_loc, where_scale, presence_prob, presence = outputs
+
+        self.glimpse = tf.reshape(self.presence * tf.nn.sigmoid(self.glimpse),
+                                  (self.max_steps, self.batch_size,) + tuple(self.glimpse_size))
+        self.canvas = tf.reshape(self.canvas, (self.max_steps, self.batch_size,) + tuple(self.img_size))
+        self.final_canvas = self.canvas[-1]
+
+        self.output_distrib = Normal(self.final_canvas, self.output_std)
+
+        posterior_step_probs = tf.transpose(tf.squeeze(self.presence_prob))
+        self.num_steps_distrib = NumStepsDistribution(posterior_step_probs)
+
+        self.num_step_per_sample = tf.to_float(tf.squeeze(tf.reduce_sum(self.presence, 0)))
+        self.num_step = tf.reduce_mean(self.num_step_per_sample)
+        self.gt_num_steps = tf.squeeze(tf.reduce_sum(self.nums, 0))
+
+    def _prior_loss(self, appearance_prior, where_scale_prior, where_shift_prior,
+                    num_steps_prior, global_step):
+
+        with tf.variable_scope('prior_loss'):
+            prior_loss = Loss()
+            if num_steps_prior is not None:
+                if num_steps_prior.anneal is not None:
+                    with tf.variable_scope('num_steps_prior'):
+                        nsp = num_steps_prior
+                        val = tf.get_variable('value', initializer=num_steps_prior.init, dtype=tf.float32,
+                                              trainable=False)
+
+                        if num_steps_prior.anneal == 'exp':
+                            decay_rate = (nsp.final / nsp.init) ** (float(nsp.steps_div) / nsp.steps)
+                            val = tf.train.exponential_decay(val, global_step, nsp.steps_div, decay_rate)
+
+                        elif num_steps_prior.anneal == 'linear':
+                            val = nsp.final + (nsp.init - nsp.final) * (1. - tf.to_float(global_step) / nsp.steps)
+
+                        num_steps_prior_value = tf.maximum(nsp.final, val)
+                else:
+                    num_steps_prior_value = num_steps_prior.init
+
+                prior = geometric_prior(num_steps_prior_value, 3)
+                steps_kl = tabular_kl(self.num_steps_distrib.prob(), prior)
+                num_steps_prior_loss_per_sample = tf.squeeze(tf.reduce_sum(steps_kl, 1))
+
+                self.num_steps_prior_loss = tf.reduce_mean(num_steps_prior_loss_per_sample)
+                tf.summary.scalar('num_steps_prior', self.num_steps_prior_loss)
+                prior_loss.add(self.num_steps_prior_loss, num_steps_prior_loss_per_sample)
+
+            if appearance_prior is not None:
+                prior = Normal(appearance_prior.loc, appearance_prior.scale)
+                posterior = Normal(self.what_loc, self.what_scale)
+
+                what_kl = _kl(posterior, prior)
+                what_kl = tf.reduce_sum(what_kl, -1, keep_dims=True) * self.presence
+                appearance_prior_loss_per_sample = tf.squeeze(tf.reduce_sum(what_kl, 0))
+
+                #         n_samples_with_encoding = tf.reduce_sum(tf.to_float(tf.greater(num_step_per_sample, 0.)))
+                #         div = tf.maximum(n_samples_with_encoding, 1.)
+                #         appearance_prior_loss = tf.reduce_sum(latent_code_prior_loss_per_sample) / div
+                self.appearance_prior_loss = tf.reduce_mean(appearance_prior_loss_per_sample)
+                tf.summary.scalar('latent_code_prior', self.appearance_prior_loss)
+                prior_loss.add(self.appearance_prior_loss, appearance_prior_loss_per_sample)
+
+                usx, utx, usy, uty = tf.split(self.where_loc, 4, 2)
+                ssx, stx, ssy, sty = tf.split(self.where_scale, 4, 2)
+                us = tf.concat((usx, usy), -1)
+                ss = tf.concat((ssx, ssy), -1)
+
+                scale_distrib = Normal(us, ss)
+                scale_prior = Normal(where_scale_prior.loc, where_scale_prior.scale)
+                scale_kl = _kl(scale_distrib, scale_prior)
+
+                ut = tf.concat((utx, uty), -1)
+                st = tf.concat((stx, sty), -1)
+                shift_distrib = Normal(ut, st)
+
+                if 'loc' in where_shift_prior:
+                    shift_mean = where_shift_prior.loc
+                else:
+                    shift_mean = ut
+                shift_prior = Normal(shift_mean, where_shift_prior.scale)
+
+                shift_kl = _kl(shift_distrib, shift_prior)
+                where_kl = tf.reduce_sum(scale_kl + shift_kl, -1, keep_dims=True) * self.presence
+                where_kl_per_sample = tf.reduce_sum(tf.squeeze(where_kl), 0)
+                self.where_kl = tf.reduce_mean(where_kl_per_sample)
+                tf.summary.scalar('where_prior', self.where_kl)
+                prior_loss.add(self.where_kl, where_kl_per_sample)
+
+        return prior_loss
+
+    def _reinforce(self, loss, make_opt, baseline=None):
+        if baseline is None:
+            baseline = getattr(self, 'baseline', None)
+
+        if callable(baseline):
+            baseline_module = baseline
+            baseline = baseline(self.obs, self.what, self.where, self.presence_prob)
+
+        log_prob = self.num_steps_distrib.log_prob(self.num_step_per_sample)
+        log_prob = tf.clip_by_value(log_prob, -1e32, 1e32)
+
+        #     log_prob *= -1 # cause we're maximising
+        self.importance_weight = loss._per_sample
+        if baseline is not None:
+            self.importance_weight -= baseline
+
+        reinforce_loss_per_sample = tf.stop_gradient(self.importance_weight) * log_prob
+        self.reinforce_loss = tf.reduce_mean(reinforce_loss_per_sample)
+        tf.summary.scalar('reinforce_loss', self.reinforce_loss)
+
+        # Baseline Optimisation
+        baseline_vars, baseline_train_step = [], None
+        if baseline is not None:
+            baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=baseline_module.variable_scope.name)
+            baseline_target = tf.stop_gradient(loss.per_sample)
+            baseline_loss_per_sample = (baseline_target - baseline) ** 2
+            self.baseline_loss = tf.reduce_mean(baseline_loss_per_sample)
+            tf.summary.scalar('baseline_loss', self.baseline_loss)
+
+            baseline_opt = make_opt(10 * self.learning_rate)
+            baseline_train_step = baseline_opt.minimize(self.baseline_loss, var_list=baseline_vars)
+
+        return self.reinforce_loss, baseline_vars, baseline_train_step
+
+    def train_step(self, learning_rate, l2_weight=0., appearance_prior=None, where_scale_prior=None,
+                   where_shift_prior=None,
+                   num_steps_prior=None, use_prior=True,
+                   use_reinforce=True, baseline=None):
+
+        self.l2_weight = l2_weight
+        self.appearance_prior = appearance_prior
+        self.where_scale_prior = where_scale_prior
+        self.where_shift_prior = where_shift_prior
+        self.num_steps_prior = num_steps_prior
+        self.use_prior = use_prior
+        self.use_reinforce = use_reinforce
+
+        with tf.variable_scope('loss'):
+            global_step = tf.train.get_or_create_global_step()
+            loss = Loss()
+            self._train_step = []
+            self.learning_rate = tf.Variable(learning_rate, name='learning_rate', trainable=False)
+            make_opt = lambda lr: tf.train.RMSPropOptimizer(lr, momentum=.9, centered=True)
+
+            # Reconstruction Loss
+            rec_loss_per_sample = -self.output_distrib.log_prob(self.obs)
+            self.rec_loss_per_sample = tf.reduce_sum(rec_loss_per_sample, axis=(1, 2))
+            self.rec_loss = tf.reduce_mean(self.rec_loss_per_sample)
+            tf.summary.scalar('rec', self.rec_loss)
+            loss.add(self.rec_loss, self.rec_loss_per_sample)
+
+            # Prior Loss
+            if use_prior:
+                self.prior_loss = self._prior_loss(appearance_prior, where_scale_prior,
+                                              where_shift_prior, num_steps_prior, global_step)
+                tf.summary.scalar('prior', self.prior_loss.value)
+                loss.add(self.prior_loss)
+
+            # REINFORCE
+            opt_loss = loss.value
+            baseline_vars = []
+            if use_reinforce:
+                reinforce_loss, baseline_vars, baseline_train_step = self._reinforce(loss, make_opt, baseline)
+                if baseline_train_step is not None:
+                    self._train_step.append(baseline_train_step)
+
+                opt_loss += reinforce_loss
+
+            model_vars = list(set(tf.trainable_variables()) - set(baseline_vars))
+            # L2 reg
+            if l2_weight > 0.:
+                self.l2_loss = l2_weight * sum(map(tf.nn.l2_loss, model_vars))
+                opt_loss += self.l2_loss
+                tf.summary.scalar('l2', self.l2_loss)
+
+            opt = make_opt(self.learning_rate)
+            gvs = opt.compute_gradients(opt_loss, var_list=model_vars)
+            true_train_step = opt.apply_gradients(gvs, global_step=global_step)
+            self._train_step.append(true_train_step)
+
+            # Metrics
+            gradient_summaries(gvs)
+            self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.gt_num_steps, self.num_step_per_sample)))
+
+            self.loss = loss
+            return self._train_step, global_step

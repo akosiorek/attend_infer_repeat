@@ -18,6 +18,7 @@ def geometric_prior(success_prob, n_steps):
 
 
 def presence_prob_table(presence_prob):
+    presence_prob = tf.cast(presence_prob, tf.float64)
     inv = 1. - presence_prob
     prob0 = inv[..., 0]
     prob1 = inv[..., 1] * presence_prob[..., 0]
@@ -26,11 +27,12 @@ def presence_prob_table(presence_prob):
 
     modified_prob = tf.stack((prob0, prob1, prob2, prob3), len(prob0.get_shape()))
 
-    modified_prob /= tf.reduce_sum(modified_prob, -1, keep_dims=True)  # + 1e-7
-    return modified_prob
+    modified_prob /= tf.reduce_sum(modified_prob, -1, keep_dims=True)
+    return tf.cast(modified_prob, tf.float32)
 
 
 def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
+    p, q = (tf.cast(i, tf.float64) for i in (p, q))
     non_zero = tf.greater(p, zero_prob_value)
     logarg = p / q
 
@@ -43,7 +45,7 @@ def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
     log = tf.scatter_nd(idx, log, tf.shape(p))
     kl = p * log
 
-    return kl
+    return tf.cast(kl, tf.float32)
 
 
 def sample_from_1d_tensor(arr, idx):
@@ -93,7 +95,9 @@ class NumStepsDistribution(object):
     def sample(self):
         pass
 
-    def prob(self, samples):
+    def prob(self, samples=None):
+        if samples is None:
+            return self._joint
         return sample_from_tensor(self._joint, samples)
 
     def log_prob(self, samples):

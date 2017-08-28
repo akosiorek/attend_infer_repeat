@@ -94,8 +94,8 @@ else:
 transition = snt.LSTM(n_hidden)
 air = AIRCell(img_size, crop_size, n_latent, transition, max_crop_size=1.0,
               canvas_init=None,
-              sample_presence=sample_presence,
-              presence_bias=presence_bias,
+              discrete_steps=sample_presence,
+              step_bias=presence_bias,
               explore_eps=explore_eps,
               debug=True)
 
