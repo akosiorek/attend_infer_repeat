@@ -16,7 +16,22 @@ _data_dir = os.path.join(_data_dir, 'data')
 _MNIST_PATH = os.path.join(_data_dir, 'MNIST_data')
 
 
-def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(20, 20), n_objects=(0, 2), n_samples=None,
+def dim_coords(proj):
+    proj = np.greater(proj, 0.)
+    size = proj.sum()
+    start = np.argmax(np.arange(len(proj)) * proj) - size + 1
+    return start, size
+
+
+def template_dimensions(template):
+    y_proj = template.sum(1)
+    x_proj = template.sum(0)
+    y_start, y_size = dim_coords(y_proj)
+    x_start, x_size = dim_coords(x_proj)
+    return (y_start, x_start), (y_size, x_size)
+
+
+def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_objects=(0, 2), n_samples=None,
                  dtype=np.uint8, expand_nums=True, with_overlap=False):
 
     mnist = input_data.read_data_sets(_MNIST_PATH, one_hot=False)
@@ -35,16 +50,19 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(20, 20), n_o
     nums = np.random.randint(max_objects + 1, size=n_samples, dtype=np.uint8)
 
     templates = np.reshape(mnist_data.images, (-1, 28, 28))
-    resize = (lambda x: x) if templates.shape[1:] == obj_size else (lambda x: imresize(x, obj_size))
+    resize = lambda x: imresize(x, obj_size)
     obj_size = np.asarray(obj_size, dtype=np.int32)
-    position_range = np.asarray(canvas_size) - obj_size
-    make_p = lambda: np.round(np.random.rand(n) * position_range).astype(np.int32)
+
+    def make_p(size):
+        position_range = np.asarray(canvas_size) - size
+        return np.round(np.random.rand(n) * position_range).astype(np.int32)
 
     occupancy = np.zeros(canvas_size, dtype=bool)
 
     i = 0
     n_tries = 5
     while i < n_samples:
+        print i,
         tries = 0
         retry = False
         n = nums[i]
@@ -57,17 +75,23 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(20, 20), n_o
                 labels[i, j] = mnist_data.labels[idx]
                 template = resize(templates[idx])
 
-                p = make_p()
+                # size = obj_size
+                # st = (0, 0)
+                st, size = template_dimensions(template)
+                print st, size
+
+                p = make_p(size)
                 if not with_overlap:
-                    while occupancy[p[0]:p[0]+obj_size[0], p[1]:p[1]+obj_size[1]].any() and tries < n_tries:
-                        p = make_p()
+                    while occupancy[p[0]:p[0]+size[0], p[1]:p[1]+size[1]].any() and tries < n_tries:
+                        p = make_p(size)
                         tries += 1
                     if tries == n_tries:
                         retry = True
+                        print 'resetting'
                         break
 
-                imgs[i, p[0]:p[0]+obj_size[0], p[1]:p[1]+obj_size[1]] = template
-                occupancy[p[0]:p[0]+obj_size[0], p[1]:p[1]+obj_size[1]] = True
+                imgs[i, p[0]:p[0]+size[0], p[1]:p[1]+size[1]] = template[st[0]:st[0]+size[0], st[1]:st[1]+size[1]]
+                occupancy[p[0]:p[0]+size[0], p[1]:p[1]+size[1]] = True
 
         if not retry:
             i += 1
@@ -83,8 +107,8 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(20, 20), n_o
     return dict(imgs=imgs, labels=labels, nums=nums)
 
 
-def load_data(path):
-    path = os.path.join(_MNIST_PATH, path)
+def load_data(path, data_path=_MNIST_PATH):
+    path = os.path.join(data_path, path)
 
     with open(path) as f:
         data = pickle.load(f)
@@ -135,6 +159,9 @@ def tensors_from_data(data_dict, batch_size, axes=None, shuffle=False):
 
 
 if __name__ == '__main__':
+    # partitions = ['train']
+    # nums = [500]
+
     partitions = ['train', 'test']
     nums = [60000, 1000]
 

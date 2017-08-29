@@ -193,6 +193,7 @@ class NumStepsSamplingKLTest(TFTestBase):
         super(NumStepsSamplingKLTest, cls).setUpClass()
 
         cls.prior = geometric_prior(.5, 3)
+        print cls.prior
 
         cls.posterior = presence_prob_table(cls.x)
         cls.posterior_kl = tabular_kl_sampling(cls.posterior, cls.prior, cls.y)
@@ -228,11 +229,13 @@ class NumStepsSamplingKLTest(TFTestBase):
             #     j = np.random.randint(1, 4)
             #     p[k, j:] = 0
             p /= p.sum(1, keepdims=True)
+            print 'min p', p.min()
 
             samples = np.random.randint(0, 4, (batch_size, 1))
 
             kl = self.eval(self.free_kl, p, samples)
-            print kl
+            for j, k in enumerate(kl):
+                print j, k, samples[j]
             self.assertGreater(kl.sum(), 0, 'value = {} at iter = {}'.format(kl.sum(), i))
             self.assertFalse(np.isnan(kl).any())
             self.assertTrue(np.isfinite(kl).all())

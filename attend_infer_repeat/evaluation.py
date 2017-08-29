@@ -27,15 +27,14 @@ def rect_stn(ax, width, height, w, c=None):
     rect(bbox, c, ax=ax)
 
 
-def make_fig(air, sess, checkpoint_dir=None, global_step=None):
+def make_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=10):
     n_steps = air.max_steps
 
     xx, pred_canvas, pred_crop, prob, pres, w = sess.run(
         [air.obs, air.canvas, air.glimpse, air.num_steps_distrib.prob()[..., 1:], air.presence, air.where])
     height, width = xx.shape[1:]
 
-    max_imgs = 10
-    bs = min(max_imgs, air.batch_size)
+    bs = min(n_samples, air.batch_size)
     scale = 1.5
     figsize = scale * np.asarray((bs, 2 * n_steps + 1))
     fig, axes = plt.subplots(2 * n_steps + 1, bs, figsize=figsize)

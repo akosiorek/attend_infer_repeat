@@ -2,6 +2,24 @@ import numpy as np
 import tensorflow as tf
 
 
+def masked_apply(tensor, op, mask):
+    """Applies `op` to tensor only at locations indicated by `mask` and sets the rest to zero.
+
+    Similar to doing tensor = tf.where(mask, op(tensor), tf.zeros_like(tensor)) behaves correctly
+    when op(tensor) is NaN or inf while tf.where does nor.
+
+    :param tensor:
+    :param op:
+    :param mask:
+    :return:
+    """
+    chosen = tf.boolean_mask(tensor, mask)
+    applied = op(chosen)
+    idx = tf.to_int32(tf.where(mask))
+    result = tf.scatter_nd(idx, applied, tf.shape(tensor))
+    return result
+
+
 def geometric_prior(success_prob, n_steps):
     if isinstance(success_prob, tf.Tensor):
         prob0 = 1 - success_prob
@@ -39,10 +57,7 @@ def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
     if logarg_clip is not None:
         logarg = tf.clip_by_value(logarg, 1. / logarg_clip, logarg_clip)
 
-    logarg = tf.boolean_mask(logarg, non_zero)
-    log = tf.log(logarg)
-    idx = tf.to_int32(tf.where(non_zero))
-    log = tf.scatter_nd(idx, log, tf.shape(p))
+    log = masked_apply(logarg, tf.log, non_zero)
     kl = p * log
 
     return tf.cast(kl, tf.float32)
@@ -72,16 +87,16 @@ def sample_from_tensor(tensor, idx):
     return samples
 
 
-def tabular_kl_sampling(p, q, samples, uniform=False):
+def tabular_kl_sampling(p, q, samples_from_p):
 
-    p_samples = sample_from_tensor(p, samples)
-    q_samples = sample_from_1d_tensor(q, samples)
+    p_samples = sample_from_tensor(p, samples_from_p)
 
+    q_samples = sample_from_1d_tensor(q, samples_from_p)
     logarg = p_samples / q_samples
-    kl = tf.log(logarg)
+    # kl = tf.log(logarg)
 
-    if uniform:
-        raise NotImplemented
+    non_zero = tf.greater(p_samples, 1e-8)
+    kl = masked_apply(logarg, tf.log, non_zero)
 
     return kl
 

@@ -4,15 +4,16 @@ import tensorflow as tf
 from tensorflow.contrib.distributions import Bernoulli, NormalWithSoftplusScale
 
 from distrib import ParametrisedGaussian
-from modules import SpatialTransformer, default_init
+from modules import SpatialTransformer
+from neural import Affine
 
 
 class AIRCell(snt.RNNCore):
     _n_transform_param = 4
 
     def __init__(self, img_size, crop_size, n_appearance,
-                 transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
-                 discrete_steps=True, canvas_init=-10., step_bias=0., explore_eps=None, debug=False):
+                 transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
+                 discrete_steps=True, canvas_init=-10., explore_eps=None, debug=False):
 
         super(AIRCell, self).__init__(self.__class__.__name__)
         self._img_size = img_size
@@ -23,7 +24,6 @@ class AIRCell(snt.RNNCore):
         self._n_hidden = self._transition.output_size[0]
 
         self._sample_presence = discrete_steps
-        self._presence_bias = step_bias
         self._explore_eps = explore_eps
         self._debug = debug
 
@@ -43,17 +43,17 @@ class AIRCell(snt.RNNCore):
             self._glimpse_encoder = glimpse_encoder()
             self._glimpse_decoder = glimpse_decoder(crop_size)
 
-            self._what_distrib = ParametrisedGaussian(n_appearance, validate_args=self._debug,
-                                                      allow_nan_stats=not self._debug)
+            self._what_distrib = ParametrisedGaussian(n_appearance, scale_offset=-1.,
+                                                      validate_args=self._debug, allow_nan_stats=not self._debug)
 
-
+            self._steps_predictor = steps_predictor()
+            self._rnn_projection = Affine(self._n_hidden, transfer=None)
 
     @property
     def state_size(self):
         return [
             np.prod(self._img_size),  # image
             np.prod(self._img_size),  # canvas
-            # np.prod(self._img_size),  # explainability
             self._n_appearance,  # what
             self._n_transform_param,  # where
             self._transition.state_size,  # hidden state of the rnn
@@ -74,7 +74,7 @@ class AIRCell(snt.RNNCore):
             1,  # presence prob
             1  # presence
         ]
-    
+
     @property
     def output_names(self):
         return 'canvas glimpse what what_loc what_scale where where_loc where_scale presence_prob presence'.split()
@@ -106,8 +106,7 @@ class AIRCell(snt.RNNCore):
 
         with tf.variable_scope('rnn_inpt'):
             rnn_inpt = tf.concat((inpt_encoding, what_code, where_code, presence), -1)
-            rnn_inpt = snt.Linear(self._n_hidden, initializers=default_init)(rnn_inpt)
-            rnn_inpt = tf.nn.elu(rnn_inpt)
+            rnn_inpt = self._rnn_projection(rnn_inpt)
             hidden_output, hidden_state = self._transition(rnn_inpt, hidden_state)
 
         where_param = self._transform_estimator(hidden_output)
@@ -119,27 +118,17 @@ class AIRCell(snt.RNNCore):
         cropped = self._spatial_transformer(img, where_code)
 
         with tf.variable_scope('presence'):
-            presence_model = snt.Linear(self._n_appearance, initializers=default_init), tf.nn.elu, snt.Linear(1,
-                                                                                                              initializers=default_init)
-            presence_model = snt.Sequential(presence_model)
-            presence_logit = presence_model(hidden_output) + self._presence_bias + 1.
-            presence_prob = tf.nn.sigmoid(presence_logit)
-
-            # if self._explore_eps is not None:
-            #     presence_prob = self._explore_eps + (1. - 2 * self._explore_eps) * presence_prob
+            presence_prob = self._steps_predictor(hidden_output)
 
             if self._explore_eps is not None:
                 clipped_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
                 presence_prob = tf.stop_gradient(clipped_prob - presence_prob) + presence_prob
-                # presence_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
 
             if self._sample_presence:
                 presence_distrib = Bernoulli(probs=presence_prob, dtype=tf.float32,
                                              validate_args=self._debug, allow_nan_stats=not self._debug)
 
                 new_presence = presence_distrib.sample()
-                # if self._explore_eps is not None:
-                #    new_presence = epsilon_greedy(presence, self._explore_eps)
                 presence *= new_presence
 
             else:
@@ -150,7 +139,6 @@ class AIRCell(snt.RNNCore):
         what_loc, what_scale = what_distrib.loc, what_distrib.scale
         what_code = what_distrib.sample()
         decoded = self._glimpse_decoder(tf.concat([what_code, tf.stop_gradient(where_code)], -1))
-        # decoded /= 2. # ** .5
         inversed = self._inverse_transformer(decoded, where_code)
 
         with tf.variable_scope('rnn_outputs'):

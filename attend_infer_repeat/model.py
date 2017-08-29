@@ -11,6 +11,7 @@ from tf_tools.eval import gradient_summaries
 class AIRModel(object):
     def __init__(self, obs, nums, max_steps, glimpse_size,
                  n_appearance, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
+                 steps_predictor,
                  output_std=1., discrete_steps=True,
                  step_bias=0., explore_eps=None, debug=False):
 
@@ -31,25 +32,24 @@ class AIRModel(object):
             shape = self.obs.get_shape().as_list()
             self.batch_size = shape[0]
             self.img_size = shape[1:]
-            self._build(transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator)
+            self._build(transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor)
 
-    def _build(self, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator):
+    def _build(self, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor):
         if self.explore_eps is not None:
             self.explore_eps = tf.get_variable('explore_eps', initializer=self.explore_eps, trainable=False)
 
-        air = AIRCell(self.img_size, self.glimpse_size, self.n_appearance, transition,
-                      input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
+        self.cell = AIRCell(self.img_size, self.glimpse_size, self.n_appearance, transition,
+                      input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
                       canvas_init=None,
                       discrete_steps=self.discrete_steps,
-                      step_bias=self.step_bias,
                       explore_eps=self.explore_eps,
                       debug=self.debug)
 
-        initial_state = air.initial_state(self.obs)
+        initial_state = self.cell.initial_state(self.obs)
 
         dummy_sequence = tf.zeros((self.max_steps, self.batch_size, 1), name='dummy_sequence')
-        outputs, state = tf.nn.dynamic_rnn(air, dummy_sequence, initial_state=initial_state, time_major=True)
-        for name, output in zip(air.output_names, outputs):
+        outputs, state = tf.nn.dynamic_rnn(self.cell, dummy_sequence, initial_state=initial_state, time_major=True)
+        for name, output in zip(self.cell.output_names, outputs):
             setattr(self, name, output)
         # canvas, glimpse, what, what_loc, what_scale, where, where_loc, where_scale, presence_prob, presence = outputs
 
@@ -147,15 +147,15 @@ class AIRModel(object):
 
         if callable(baseline):
             baseline_module = baseline
-            baseline = baseline(self.obs, self.what, self.where, self.presence_prob)
+            self.baseline = baseline(self.obs, self.what, self.where, self.presence_prob)
 
         log_prob = self.num_steps_distrib.log_prob(self.num_step_per_sample)
-        log_prob = tf.clip_by_value(log_prob, -1e32, 1e32)
+        log_prob = tf.clip_by_value(log_prob, -1e38, 1e38)
 
         #     log_prob *= -1 # cause we're maximising
         self.importance_weight = loss._per_sample
         if baseline is not None:
-            self.importance_weight -= baseline
+            self.importance_weight -= self.baseline
 
         reinforce_loss_per_sample = tf.stop_gradient(self.importance_weight) * log_prob
         self.reinforce_loss = tf.reduce_mean(reinforce_loss_per_sample)
@@ -166,7 +166,7 @@ class AIRModel(object):
         if baseline is not None:
             baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=baseline_module.variable_scope.name)
             baseline_target = tf.stop_gradient(loss.per_sample)
-            baseline_loss_per_sample = (baseline_target - baseline) ** 2
+            baseline_loss_per_sample = (baseline_target - self.baseline) ** 2
             self.baseline_loss = tf.reduce_mean(baseline_loss_per_sample)
             tf.summary.scalar('baseline_loss', self.baseline_loss)
 
@@ -222,7 +222,9 @@ class AIRModel(object):
             model_vars = list(set(tf.trainable_variables()) - set(baseline_vars))
             # L2 reg
             if l2_weight > 0.:
-                self.l2_loss = l2_weight * sum(map(tf.nn.l2_loss, model_vars))
+                # don't penalise biases
+                weights = [w for w in model_vars if len(w.get_shape()) == 2]
+                self.l2_loss = l2_weight * sum(map(tf.nn.l2_loss, weights))
                 opt_loss += self.l2_loss
                 tf.summary.scalar('l2', self.l2_loss)
 

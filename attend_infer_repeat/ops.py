@@ -51,3 +51,11 @@ class Loss(object):
 #         if np.isinf(v).any():
 #             print 'found Inf in {} in iter {}'.format(k, train_itr)
 #             break
+
+
+def epsilon_greedy(events, eps):
+    shape = tf.shape(events)
+    do_explore = tf.less(tf.random_uniform(shape, dtype=tf.float32), tf.ones(shape, dtype=tf.float32) * eps)
+    random = tf.cast(tf.round(tf.random_uniform(shape, dtype=tf.float32)), events.dtype)
+    events = tf.where(do_explore, random, events)
+    return events

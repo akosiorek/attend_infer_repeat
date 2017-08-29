@@ -1,44 +1,8 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.python.util import nest
 import sonnet as snt
 
-import math
-
-
-def create_linear_initializer(input_size):
-    """Returns a default initializer for weights of a linear module."""
-    stddev = 1 / math.sqrt(input_size * 2)
-    return tf.truncated_normal_initializer(stddev=stddev)
-    # return tf.contrib.layers.variance_scaling_initializer()
-    # return tf.contrib.layers.python.layers.initializers.variance_scaling_initializer()
-
-
-def create_bias_initializer(unused_bias_shape):
-  """Returns a default initializer for the biases of a linear/AddBias module."""
-  return tf.truncated_normal_initializer(stddev=1e-2)
-
-
-snt.python.modules.basic.create_linear_initializer = create_linear_initializer
-snt.python.modules.basic.create_bias_initializer = create_bias_initializer
-
-
-default_init = None
-# default_init = {
-#     'w': tf.uniform_unit_scaling_initializer(),
-#     'b': tf.truncated_normal_initializer(stddev=1e-2)
-# }
-
-
-
-
-
-def epsilon_greedy(events, eps):
-    shape = tf.shape(events)
-    do_explore = tf.less(tf.random_uniform(shape, dtype=tf.float32), tf.ones(shape, dtype=tf.float32) * eps)
-    random = tf.cast(tf.round(tf.random_uniform(shape, dtype=tf.float32)), events.dtype)
-    events = tf.where(do_explore, random, events)
-    return events
+from neural import MLP
 
 
 class TransformParam(snt.AbstractModule):
@@ -50,28 +14,13 @@ class TransformParam(snt.AbstractModule):
         self._max_crop_size = max_crop_size
 
     def _embed(self, inpt):
-        # flat = snt.BatchFlatten()
-        # linear1 = snt.Linear(256, initializers=default_init)
-        # linear2 = snt.Linear(256, initializers=default_init)
-        #
-        # # init = {
-        # #     'w': tf.uniform_unit_scaling_initializer(.1),
-        # #     'b': tf.zeros_initializer()
-        # # }
-        # init = default_init
-        # linear3 = snt.Linear(self._n_param, initializers=init)
-        # seq = snt.Sequential([flat, linear1, tf.nn.elu, linear2, tf.nn.elu, linear3])
-        # output = seq(inpt)
-
         flatten = snt.BatchFlatten()
         mlp = MLP(self._n_hidden, n_out=self._n_param)
         seq = snt.Sequential([flatten, mlp])
         return seq(inpt)
 
     def _transform(self, inpt):
-        # output *= 1e-4
         sx, tx, sy, ty = tf.split(inpt, 4, 1)
-        # sx, sy = (.5e-4 + (1 - 1e-4) * self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
         sx, sy = (self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
         tx, ty = (tf.nn.tanh(t) for t in (tx, ty))
         output = tf.concat((sx, tx, sy, ty), -1)
@@ -92,7 +41,7 @@ class StochasticTransformParam(TransformParam):
         n_params = self._n_param / 2
         locs = self._transform(embedding[..., :n_params])
         scales = embedding[..., n_params:]
-        return locs, scales #+ self._scale_bias
+        return locs, scales + self._scale_bias
 
 
 class Encoder(snt.AbstractModule):
@@ -103,11 +52,7 @@ class Encoder(snt.AbstractModule):
 
     def _build(self, inpt):
         flat = snt.BatchFlatten()
-        # linear1 = snt.Linear(256, initializers=default_init)
-        # linear2 = snt.Linear(256, initializers=default_init)
         mlp = MLP(self._n_hidden)
-        # linear2 = snt.Linear(2 * self._n_appearance, initializers=default_init)
-        # seq = snt.Sequential([flat, linear1, tf.nn.elu, linear2, tf.nn.elu])
         seq = snt.Sequential([flat, mlp])
         return seq(inpt)
 
@@ -145,29 +90,17 @@ class SpatialTransformer(snt.AbstractModule):
         return snt.resampler(img, grid_coords)
 
 
-def MLP(n_hiddens, hidden_transfer=tf.nn.elu, n_out=None, transfer=None):
-    n_hiddens = nest.flatten(n_hiddens)
-    transfers = nest.flatten(hidden_transfer)
-    if len(transfers) > 1:
-        assert len(transfers) == len(n_hiddens)
-    else:
-        transfers *= len(n_hiddens)
+class StepsPredictor(snt.AbstractModule):
 
-    layers = []
-    for n_hidden, hidden_transfer in zip(n_hiddens, transfers):
-        layers.append(snt.Linear(n_hidden))
-        layers.append(hidden_transfer)
+    def __init__(self, n_hidden, steps_bias):
+        super(StepsPredictor, self).__init__(self.__class__.__name__)
+        self._n_hidden = n_hidden
+        self._steps_bias = steps_bias
 
-    if n_out is not None:
-        layers.append(snt.Linear(n_out))
-
-    if transfer is not None:
-        layers.append(transfer)
-
-    module = snt.Sequential(layers)
-    module.output_size = n_out if n_out is not None else n_hiddens[-1]
-
-    return module
+    def _build(self, inpt):
+        mlp = MLP(self._n_hidden, n_out=1)
+        logit = mlp(inpt) + self._steps_bias
+        return tf.nn.sigmoid(logit)
 
 
 class BaselineMLP(snt.AbstractModule):
