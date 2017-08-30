@@ -1,7 +1,7 @@
 
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 from os import path as osp
 import numpy as np
@@ -17,10 +17,8 @@ from neurocity.tools.params import num_trainable_params
 from data import load_data, tensors_from_data
 from mnist_model import AIRonMNIST
 
-get_ipython().magic(u'matplotlib inline')
 
-
-# In[2]:
+# In[ ]:
 
 learning_rate = 1e-4
 batch_size = 64
@@ -31,14 +29,14 @@ n_hidden = 256
 n_steps = 3
 
 results_dir = '../results'
-run_name = 'test'
+run_name = 'bigger_digits'
 
 logdir = osp.join(results_dir, run_name)
 checkpoint_name = osp.join(logdir, 'model.ckpt')
 axes = {'imgs': 0, 'labels': 0, 'nums': 1}
 
 
-# In[3]:
+# In[ ]:
 
 use_prior = True
 
@@ -56,20 +54,21 @@ where_shift_prior = AttrDict(scale=1.)
 
 use_reinforce = True
 sample_presence = True
-presence_bias = 0.
+step_bias = 1.
+transform_var_bias = -3.
 
 init_explore_eps = .00
 
-l2_weight = 1e-5 #1e-5
+l2_weight = 0. #1e-5
 
 
-# In[4]:
+# In[ ]:
 
 test_data = load_data('mnist_test.pickle')
 train_data = load_data('mnist_train.pickle')
 
 
-# In[5]:
+# In[ ]:
 
 tf.reset_default_graph()
 train_tensors = tensors_from_data(train_data, batch_size, axes, shuffle=True)
@@ -77,7 +76,7 @@ test_tensors = tensors_from_data(test_data, batch_size, axes, shuffle=False)
 x, test_x = train_tensors['imgs'], test_tensors['imgs']
 y, test_y = train_tensors['nums'], test_tensors['nums']
     
-n_hidden = 32 * 12
+n_hidden = 32 * 8
 n_layers = 2
 n_hiddens = [n_hidden] * n_layers
     
@@ -88,26 +87,29 @@ air = AIRonMNIST(x, y,
                 glimpse_encoder_hidden=n_hiddens,
                 glimpse_decoder_hidden=n_hiddens,
                 transform_estimator_hidden=n_hiddens,
-                baseline_hidden=[256, 128])
+                steps_pred_hidden=[128, 64],
+                baseline_hidden=[256, 128],
+                transform_var_bias=transform_var_bias,
+                step_bias=step_bias)
 
 
-# In[6]:
+# In[ ]:
 
 print num_trainable_params()
 
 
-# In[7]:
+# In[ ]:
 
 train_step, global_step = air.train_step(learning_rate, l2_weight, appearance_prior, where_scale_prior,
                             where_shift_prior, num_steps_prior)
 
 
-# In[8]:
+# In[ ]:
 
 print num_trainable_params()
 
 
-# In[9]:
+# In[ ]:
 
 config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
@@ -117,13 +119,13 @@ sess.run(tf.global_variables_initializer())
 all_summaries = tf.summary.merge_all()
 
 
-# In[10]:
+# In[ ]:
 
 summary_writer = tf.summary.FileWriter(logdir, sess.graph)
-saver = tf.train.Saver()
+saver = tf.train.Saver(max_to_keep=100)
 
 
-# In[11]:
+# In[ ]:
 
 # import os
 
@@ -133,7 +135,7 @@ saver = tf.train.Saver()
 # saver.restore(sess, restore_path)
 
 
-# In[12]:
+# In[ ]:
 
 imgs = train_data['imgs']
 presence_gt = train_data['nums']
@@ -155,7 +157,7 @@ print 'Starting training at iter = {}'.format(train_itr)
 if train_itr == 0:
     log(0)
 
-while train_itr < 1e6:
+while train_itr <= 300 * 1e3:
         
     train_itr, _ = sess.run([global_step, train_step])
     
@@ -163,15 +165,9 @@ while train_itr < 1e6:
         summaries = sess.run(all_summaries)
         summary_writer.add_summary(summaries, train_itr)
         
-    if train_itr % 5000 == 0:
+    if train_itr % 10000 == 0:
         log(train_itr)
         
-    if train_itr % 5000 == 0:
-#         saver.save(sess, checkpoint_name, global_step=train_itr)
+    if train_itr % 10000 == 0:
+        saver.save(sess, checkpoint_name, global_step=train_itr)
         make_fig(air, sess, logdir, train_itr)    
-
-
-# In[ ]:
-
-make_fig(air, sess)
-
