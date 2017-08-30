@@ -7,7 +7,7 @@ from modules import BaselineMLP, Encoder, Decoder, StochasticTransformParam, Ste
 
 class AIRonMNIST(AIRModel):
 
-    def __init__(self, obs, nums,
+    def __init__(self, obs, nums, glimpse_size=(20, 20),
                  inpt_encoder_hidden=[256]*2,
                  glimpse_encoder_hidden=[256]*2,
                  glimpse_decoder_hidden=[252]*2,
@@ -28,7 +28,7 @@ class AIRonMNIST(AIRModel):
             *args,
             obs=obs,
             nums=nums,
-            glimpse_size=(20, 20),
+            glimpse_size=glimpse_size,
             n_appearance=50,
             transition=snt.LSTM(256),
             input_encoder=(lambda: Encoder(inpt_encoder_hidden)),
