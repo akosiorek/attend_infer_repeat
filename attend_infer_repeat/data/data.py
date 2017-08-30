@@ -1,4 +1,5 @@
 import os
+import sys
 import numpy as np
 import itertools
 import cPickle as pickle
@@ -61,8 +62,11 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_o
 
     i = 0
     n_tries = 5
+    print 'Creating {} samples'.format(n_samples)
     while i < n_samples:
-        print i,
+        print '{} / {}\r'.format(i, n_samples),
+        sys.stdout.flush()
+
         tries = 0
         retry = False
         n = nums[i]
@@ -74,11 +78,7 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_o
                 idx = indices[j]
                 labels[i, j] = mnist_data.labels[idx]
                 template = resize(templates[idx])
-
-                # size = obj_size
-                # st = (0, 0)
                 st, size = template_dimensions(template)
-                print st, size
 
                 p = make_p(size)
                 if not with_overlap:
@@ -87,7 +87,6 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_o
                         tries += 1
                     if tries == n_tries:
                         retry = True
-                        print 'resetting'
                         break
 
                 imgs[i, p[0]:p[0]+size[0], p[1]:p[1]+size[1]] = template[st[0]:st[0]+size[0], st[1]:st[1]+size[1]]
@@ -98,6 +97,7 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_o
         else:
             imgs[i, ...] = 0.
 
+    print '\nfinished'
     if expand_nums:
         expanded = np.zeros((max_objects + 1, n_samples, 1), dtype=np.uint8)
         for i, n in enumerate(nums):
@@ -159,14 +159,15 @@ def tensors_from_data(data_dict, batch_size, axes=None, shuffle=False):
 
 
 if __name__ == '__main__':
-    # partitions = ['train']
-    # nums = [500]
-
-    partitions = ['train', 'test']
-    nums = [60000, 1000]
+    partitions = ['train', 'validation']
+    nums = [60000, 10000]
 
     for p, n in zip(partitions, nums):
+        print 'Processing partition "{}"'.format(p)
         data = create_mnist(p, n_samples=n)
         filename = 'mnist_{}.pickle'.format(p)
+        filename = os.path.join(_MNIST_PATH, filename)
+    
+        print 'saving to "{}"'.format(filename)
         with open(filename, 'w') as f:
             pickle.dump(data, f, pickle.HIGHEST_PROTOCOL)
