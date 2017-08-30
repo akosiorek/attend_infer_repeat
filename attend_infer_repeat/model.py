@@ -5,7 +5,7 @@ from tensorflow.contrib.distributions.python.ops.kullback_leibler import kl as _
 from cell import AIRCell
 from ops import Loss
 from prior import geometric_prior, NumStepsDistribution, tabular_kl
-from tf_tools.eval import gradient_summaries
+from evaluation import gradient_summaries
 
 
 class AIRModel(object):

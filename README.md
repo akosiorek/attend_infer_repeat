@@ -13,7 +13,7 @@ Install [Tensorflow v1.1.0rc1](https://www.tensorflow.org/versions/r1.1/install/
  (using `pip install -r requirements.txt` (preferred) or `pip install [package]`):
 * matplotlib==1.5.3
 * numpy==1.12.1
-* pandas==0.18.1
+* attrdict==2.0.0
 * scipy==0.18.1
 
 ## Sample Results
@@ -26,7 +26,7 @@ probability of executing 1, 2 or 3 steps. If the reconstructed crop is black and
 
 ## Data  
 Run `./scripts/create_dataset.sh`
-The script creates train and validation datasets of multi-digit MNIST
+The script creates train and validation datasets of multi-digit MNIST.
 
 ## Training
 Run `./scripts/train_multi_mnist.sh`
@@ -35,7 +35,7 @@ The training script will run for 300k iteratios and will save model checkpoints 
 The model seems to be very sensitive to initialisation. It might be necessary to run training multiple times before achieving count step accuracy close to the one reported in the paper.
 
 ## Experimentation
-The jupyter notebook available at `attend_infer_repeat/experiment.ipynb' can be used for experimentation'
+The jupyter notebook available at `attend_infer_repeat/experiment.ipynb` can be used for experimentation.
 
 ## Citation
 
