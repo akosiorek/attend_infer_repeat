@@ -1,4 +1,3 @@
-import tensorflow as tf
 import sonnet as snt
 
 from model import AIRModel
@@ -6,6 +5,7 @@ from modules import BaselineMLP, Encoder, Decoder, StochasticTransformParam, Ste
 
 
 class AIRonMNIST(AIRModel):
+    """Implements AIR for the MNIST dataset"""
 
     def __init__(self, obs, nums, glimpse_size=(20, 20),
                  inpt_encoder_hidden=[256]*2,

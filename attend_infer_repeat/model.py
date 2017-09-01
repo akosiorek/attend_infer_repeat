@@ -3,17 +3,37 @@ from tensorflow.contrib.distributions import Normal
 from tensorflow.contrib.distributions.python.ops.kullback_leibler import kl as _kl
 
 from cell import AIRCell
+from evaluation import gradient_summaries
 from ops import Loss
 from prior import geometric_prior, NumStepsDistribution, tabular_kl
-from evaluation import gradient_summaries
 
 
 class AIRModel(object):
+    """Generic AIR model"""
+
     def __init__(self, obs, nums, max_steps, glimpse_size,
                  n_appearance, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
                  steps_predictor,
                  output_std=1., discrete_steps=True,
-                 step_bias=0., explore_eps=None, debug=False):
+                 explore_eps=None, debug=False):
+        """Creates the model.
+
+        :param obs: tf.Tensor, imags
+        :param nums: tf.Tensor, number of digits in images (not used for inference or training)
+        :param max_steps: int, maximum number of steps to take (or objects in the image)
+        :param glimpse_size: tuple of ints, size of the attention glimpse
+        :param n_appearance: int, number of latent variables describing an object
+        :param transition: see :class: AIRCell
+        :param input_encoder: see :class: AIRCell
+        :param glimpse_encoder: see :class: AIRCell
+        :param glimpse_decoder: see :class: AIRCell
+        :param transform_estimator: see :class: AIRCell
+        :param steps_predictor: see :class: AIRCell
+        :param output_std: float, std. dev. of the output Gaussian distribution
+        :param discrete_steps: see :class: AIRCell
+        :param explore_eps: see :class: AIRCell
+        :param debug: see :class: AIRCell
+        """
 
         self.obs = obs
         self.nums = nums
@@ -24,7 +44,6 @@ class AIRModel(object):
 
         self.output_std = output_std
         self.discrete_steps = discrete_steps
-        self.step_bias = step_bias
         self.explore_eps = explore_eps
         self.debug = debug
 
@@ -32,18 +51,21 @@ class AIRModel(object):
             shape = self.obs.get_shape().as_list()
             self.batch_size = shape[0]
             self.img_size = shape[1:]
-            self._build(transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor)
+            self._build(transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
+                        steps_predictor)
 
     def _build(self, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor):
+        """Build the model. See __init__ for argument description"""
+
         if self.explore_eps is not None:
             self.explore_eps = tf.get_variable('explore_eps', initializer=self.explore_eps, trainable=False)
 
         self.cell = AIRCell(self.img_size, self.glimpse_size, self.n_appearance, transition,
-                      input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
-                      canvas_init=None,
-                      discrete_steps=self.discrete_steps,
-                      explore_eps=self.explore_eps,
-                      debug=self.debug)
+                            input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
+                            canvas_init=None,
+                            discrete_steps=self.discrete_steps,
+                            explore_eps=self.explore_eps,
+                            debug=self.debug)
 
         initial_state = self.cell.initial_state(self.obs)
 
@@ -69,6 +91,7 @@ class AIRModel(object):
 
     def _prior_loss(self, appearance_prior, where_scale_prior, where_shift_prior,
                     num_steps_prior, global_step):
+        """Creates KL-divergence term of the loss"""
 
         with tf.variable_scope('prior_loss'):
             prior_loss = Loss()
@@ -142,6 +165,9 @@ class AIRModel(object):
         return prior_loss
 
     def _reinforce(self, loss, make_opt, baseline=None):
+        """Implements REINFORCE for training the discrete probability distribution over number of steps and train-step
+         for the baseline"""
+
         if baseline is None:
             baseline = getattr(self, 'baseline', None)
 
@@ -164,7 +190,8 @@ class AIRModel(object):
         # Baseline Optimisation
         baseline_vars, baseline_train_step = [], None
         if baseline is not None:
-            baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=baseline_module.variable_scope.name)
+            baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                              scope=baseline_module.variable_scope.name)
             baseline_target = tf.stop_gradient(loss.per_sample)
             baseline_loss_per_sample = (baseline_target - self.baseline) ** 2
             self.baseline_loss = tf.reduce_mean(baseline_loss_per_sample)
@@ -179,6 +206,31 @@ class AIRModel(object):
                    where_shift_prior=None,
                    num_steps_prior=None, use_prior=True,
                    use_reinforce=True, baseline=None):
+        """Creates the train step and the global_step
+
+        :param learning_rate: float or tf.Tensor
+        :param l2_weight: float or tf.Tensor, if > 0. then adds l2 regularisation to the model
+        :param appearance_prior: AttrDict or similar, with `loc` and `scale`, both floats
+        :param where_scale_prior: AttrDict or similar, with `loc` and `scale`, both floats
+        :param where_shift_prior: AttrDict or similar, with `loc` and `scale`, both floats
+        :param num_steps_prior: AttrDict or similar, described as an example:
+
+            >>> num_steps_prior = AttrDict(
+            >>> anneal='exp',   # type of annealing of the prior; can be 'exp', 'linear' or None
+            >>> init=1. - 1e-7, # initial value of the prior
+            >>> final=1e-5,     # final value of the prior
+            >>> steps_div=1e4,  # relevant for exponential annealing, see :func: tf.exponential_decay
+            >>> steps=1e5       # number of steps for annealing
+            >>> )
+
+        `init` and `final` describe success probability values in a geometric distribution; for example `init=.9` means
+        that the probability of taking a single step is .9, two steps is .9**2 etc.
+
+        :param use_prior: boolean, if False sets the KL-divergence loss term to 0
+        :param use_reinforce: boolean, if False doesn't compute gradients for the number of steps
+        :param baseline: callable or None, baseline for variance reduction of REINFORCE
+        :return: train step and global step
+        """
 
         self.l2_weight = l2_weight
         self.appearance_prior = appearance_prior
@@ -205,7 +257,7 @@ class AIRModel(object):
             # Prior Loss
             if use_prior:
                 self.prior_loss = self._prior_loss(appearance_prior, where_scale_prior,
-                                              where_shift_prior, num_steps_prior, global_step)
+                                                   where_shift_prior, num_steps_prior, global_step)
                 tf.summary.scalar('prior', self.prior_loss.value)
                 loss.add(self.prior_loss)
 

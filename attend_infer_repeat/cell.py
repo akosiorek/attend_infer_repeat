@@ -3,17 +3,38 @@ import sonnet as snt
 import tensorflow as tf
 from tensorflow.contrib.distributions import Bernoulli, NormalWithSoftplusScale
 
-from distrib import ParametrisedGaussian
-from modules import SpatialTransformer
+from modules import SpatialTransformer, ParametrisedGaussian
 from neural import Affine
 
 
 class AIRCell(snt.RNNCore):
+    """RNN cell that implements the core features of Attend, Infer, Repeat, as described here:
+    https://arxiv.org/abs/1603.08575
+    """
     _n_transform_param = 4
 
     def __init__(self, img_size, crop_size, n_appearance,
                  transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
-                 discrete_steps=True, canvas_init=-10., explore_eps=None, debug=False):
+                 discrete_steps=True, canvas_init=None, explore_eps=None, debug=False):
+        """Creates the cell
+
+        :param img_size: int tuple, size of the image
+        :param crop_size: int tuple, size of the attention glimpse
+        :param n_appearance: number of latent units describing the "what"
+        :param transition: an RNN cell for maintaining the internal hidden state
+        :param input_encoder: callable, encodes the original input image before passing it into the transition
+        :param glimpse_encoder: callable, encodes the glimpse into latent representation
+        :param glimpse_decoder: callable, decodes the glimpse from latent representation
+        :param transform_estimator: callabe, transforms the hidden state into parameters for the spatial transformer
+        :param steps_predictor: callable, predicts whether to take a step
+        :param discrete_steps: boolean, steps are samples from a Bernoulli distribution if True; if False, all steps are
+         taken and are weighted by the step probability
+        :param canvas_init: float or None, initial value for the reconstructed image. If None, the canvas is black. If
+         float, the canvas starts with a given value, which is trainable.
+        :param explore_eps: float or None; if float, it has to be \in (0., .5); step probability is clipped between
+         `explore_eps` and (1 - `explore_eps)
+        :param debug: boolean, adds checks for NaNs in the inputs to distributions
+        """
 
         super(AIRCell, self).__init__(self.__class__.__name__)
         self._img_size = img_size
@@ -97,6 +118,7 @@ class AIRCell(snt.RNNCore):
                 what_code, where_code, hidden_state, init_presence]
 
     def _build(self, inpt, state):
+        """Input is unused; it's only to force a maximum number of steps"""
 
         img_flat, canvas_flat, what_code, where_code, hidden_state, presence = state
         img = tf.reshape(img_flat, (-1,) + tuple(self._img_size))
@@ -152,46 +174,3 @@ class AIRCell(snt.RNNCore):
         state = [img_flat, canvas_flat,
                  what_code, where_code, hidden_state, presence]
         return output, state
-
-
-if __name__ == '__main__':
-    learning_rate = 1e-4
-    batch_size = 10
-    img_size = 50, 50
-    crop_size = 20, 20
-    n_latent = 10
-    n_steps = 3
-
-    x = tf.placeholder(tf.float32, (batch_size,) + img_size, name='inpt')
-
-    transition = snt.GRU(n_latent)
-    air = AIRCell(img_size, crop_size, n_latent, transition)
-    initial_state = air.initial_state(x)
-
-    dummy_sequence = tf.zeros((n_steps, batch_size, 1), name='dummy_sequence')
-    outputs, state = tf.nn.dynamic_rnn(air, dummy_sequence, initial_state=initial_state, time_major=True)
-    canvas, crop, what, what_loc, what_scale, where, where_loc, where_scale, presence_prob, presence = outputs
-
-    canvas = tf.reshape(canvas, (n_steps, batch_size,) + tuple(img_size))
-    final_canvas = canvas[-1]
-
-    loss = tf.nn.l2_loss(x - final_canvas)
-
-    opt = tf.train.AdamOptimizer(learning_rate)
-    train_step = opt.minimize(loss)
-
-    print 'Constructed model'
-
-    sess = tf.Session()
-    sess.run(tf.global_variables_initializer())
-
-    xx = np.random.rand(*x.get_shape().as_list())
-    res, l = sess.run([outputs, loss], {x: xx})
-
-    for r in res:
-        print r.shape
-
-    print res
-
-    print 'loss = {}'.format(l)
-    print 'Done'

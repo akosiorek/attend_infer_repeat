@@ -35,7 +35,7 @@ def geometric_prior(success_prob, n_steps):
     return probs
 
 
-def presence_prob_table(presence_prob):
+def bernoulli_to_geometric(presence_prob):
     presence_prob = tf.cast(presence_prob, tf.float64)
     inv = 1. - presence_prob
     prob0 = inv[..., 0]
@@ -50,6 +50,14 @@ def presence_prob_table(presence_prob):
 
 
 def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
+    """Computes KL-divergence KL(p||q) for two probability mass functions (pmf) given in a tabular form.
+
+    :param p: iterable
+    :param q: iterable
+    :param zero_prob_value: float; values below this threshold are treated as zero
+    :param logarg_clip: float or None, clips the argument to the log to lie in [-logarg_clip, logarg_clip] if not None
+    :return: iterable of brodcasted shape of (p * q), per-coordinate value of KL(p||q)
+    """
     p, q = (tf.cast(i, tf.float64) for i in (p, q))
     non_zero = tf.greater(p, zero_prob_value)
     logarg = p / q
@@ -64,6 +72,7 @@ def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
 
 
 def sample_from_1d_tensor(arr, idx):
+    """Takes samples from `arr` indicated by `idx`"""
     arr = tf.convert_to_tensor(arr)
     assert len(arr.get_shape()) == 1, "shape is {}".format(arr.get_shape())
 
@@ -73,6 +82,7 @@ def sample_from_1d_tensor(arr, idx):
 
 
 def sample_from_tensor(tensor, idx):
+    """Takes sample from `tensor` indicated by `idx`, works for minibatches"""
     tensor = tf.convert_to_tensor(tensor)
     if len(tensor.get_shape()) > 2:
         raise NotImplemented
@@ -87,25 +97,19 @@ def sample_from_tensor(tensor, idx):
     return samples
 
 
-def tabular_kl_sampling(p, q, samples_from_p):
-
-    p_samples = sample_from_tensor(p, samples_from_p)
-
-    q_samples = sample_from_1d_tensor(q, samples_from_p)
-    logarg = p_samples / q_samples
-    # kl = tf.log(logarg)
-
-    non_zero = tf.greater(p_samples, 1e-8)
-    kl = masked_apply(logarg, tf.log, non_zero)
-
-    return kl
-
-
 class NumStepsDistribution(object):
+    """Probability distribution used for the number of steps
+
+    Transforms Bernoulli probabilities of an event = 1 into p(n) where n is the number of steps
+    as described in the AIR paper."""
 
     def __init__(self, steps_probs):
+        """
+
+        :param steps_probs: tensor; Bernoulli success probabilities
+        """
         self._steps_probs = steps_probs
-        self._joint = presence_prob_table(steps_probs)
+        self._joint = bernoulli_to_geometric(steps_probs)
 
     def sample(self):
         pass

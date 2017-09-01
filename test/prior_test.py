@@ -2,7 +2,7 @@ import numpy as np
 import unittest
 
 from numpy.testing import assert_array_equal
-from tf_tools.testing_tools import TFTestBase
+from testing_tools import TFTestBase
 
 from attend_infer_repeat.prior import *
 
@@ -78,20 +78,20 @@ class ConditionalPresencePosteriorTest(TFTestBase):
     @classmethod
     def setUpClass(cls):
         super(ConditionalPresencePosteriorTest, cls).setUpClass()
-        cls.probs = presence_prob_table(cls.x)
+        cls.probs = bernoulli_to_geometric(cls.x)
 
     def test_shape(self):
 
         x = tf.placeholder(tf.float32, [3])
-        probs = presence_prob_table(x)
+        probs = bernoulli_to_geometric(x)
         self.assertEqual(tuple(probs.get_shape().as_list()), (4,))
 
         x = tf.placeholder(tf.float32, [7, 3])
-        probs = presence_prob_table(x)
+        probs = bernoulli_to_geometric(x)
         self.assertEqual(tuple(probs.get_shape().as_list()), (7, 4,))
 
         x = tf.placeholder(tf.float32, [7, 11, 3])
-        probs = presence_prob_table(x)
+        probs = bernoulli_to_geometric(x)
         self.assertEqual(tuple(probs.get_shape().as_list()), (7, 11, 4,))
 
     def test_obvious(self):
@@ -127,7 +127,7 @@ class NumStepsKLTest(TFTestBase):
 
         cls.prior = geometric_prior(.005, 3)
 
-        cls.posterior = presence_prob_table(cls.x)
+        cls.posterior = bernoulli_to_geometric(cls.x)
         cls.posterior_grad = tf.gradients(cls.posterior, cls.x)
 
         cls.posterior_kl = tabular_kl(cls.posterior, cls.prior, 0.)
@@ -182,60 +182,3 @@ class NumStepsKLTest(TFTestBase):
         print grad
         self.assertFalse(np.isnan(grad).any())
         self.assertTrue(np.isfinite(grad).all())
-
-
-class NumStepsSamplingKLTest(TFTestBase):
-
-    vars = {'x': [tf.float32, [None, None]], 'y': [tf.int32, [None, None]]}
-
-    @classmethod
-    def setUpClass(cls):
-        super(NumStepsSamplingKLTest, cls).setUpClass()
-
-        cls.prior = geometric_prior(.5, 3)
-        print cls.prior
-
-        cls.posterior = presence_prob_table(cls.x)
-        cls.posterior_kl = tabular_kl_sampling(cls.posterior, cls.prior, cls.y)
-        cls.free_kl = tabular_kl_sampling(cls.x, cls.prior, cls.y)
-
-    def test_sample_from_list(self):
-
-        samples = np.random.randint(0, 4, (10, 1))
-        sampling_fun = sample_from_1d_tensor(self.prior, samples)
-        res = self.sess.run(sampling_fun).squeeze()
-
-        samples = samples.squeeze()
-        for r, s in zip(res, samples):
-            self.assertEqual(r, self.prior[s])
-
-    def test_sample_from_matrix(self):
-        samples = np.random.randint(0, 4, (10, 1))
-        matrix = np.random.rand(10, 4)
-
-        sampling_fun = sample_from_tensor(matrix, samples)
-        res = self.sess.run(sampling_fun).squeeze()
-
-        samples = samples.squeeze()
-        for r, s, row in zip(res, samples, matrix):
-            self.assertEqual(r, row[s])
-
-    def test_free_stress(self):
-        batch_size = 64
-
-        for i in xrange(_N_STRESS_ITER):
-            p = abs(np.random.rand(batch_size, 4))
-            # for k in xrange(batch_size):
-            #     j = np.random.randint(1, 4)
-            #     p[k, j:] = 0
-            p /= p.sum(1, keepdims=True)
-            print 'min p', p.min()
-
-            samples = np.random.randint(0, 4, (batch_size, 1))
-
-            kl = self.eval(self.free_kl, p, samples)
-            for j, k in enumerate(kl):
-                print j, k, samples[j]
-            self.assertGreater(kl.sum(), 0, 'value = {} at iter = {}'.format(kl.sum(), i))
-            self.assertFalse(np.isnan(kl).any())
-            self.assertTrue(np.isfinite(kl).all())
