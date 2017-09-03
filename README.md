@@ -3,10 +3,12 @@
 This is an **unofficial** Tensorflow implementation of Attend, Infear, Repeat (AIR), as presented in the following paper:
 [S. M. Ali Eslami](http://arkitus.com/) et. al., [Attend, Infer, Repeat: Fast Scene Understanding with Generative Models](https://papers.nips.cc/paper/6230-attend-infer-repeat-fast-scene-understanding-with-generative-models).
 
-* **Author**: Adam Kosiorek, Oxford Robotics Institue, University of Oxford
+* **Author (of the implementation)**: Adam Kosiorek, Oxford Robotics Institue, University of Oxford
 * **Email**: adamk(at)robots.ox.ac.uk
-* **Paper**: https://papers.nips.cc/paper/6230-attend-infer-repeat-fast-scene-understanding-with-generative-models.pdf
 * **Webpage**: http://ori.ox.ac.uk/
+
+I describe the implementation and the issues I run into while working on it in [this blog post](http://akosiorek.github.io/ml/2017/09/03/implementing-air.html).
+
 
 ## Installation
 Install [Tensorflow v1.1.0rc1](https://www.tensorflow.org/versions/r1.1/install/), [Sonnet v1.1](https://github.com/deepmind/sonnet/tree/3fd7d9d342d9683df83a44ebd048ef0d5668266b) and the following dependencies
