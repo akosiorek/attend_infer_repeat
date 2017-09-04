@@ -5,7 +5,7 @@ This is an **unofficial** Tensorflow implementation of Attend, Infear, Repeat (A
 
 * **Author (of the implementation)**: Adam Kosiorek, Oxford Robotics Institue, University of Oxford
 * **Email**: adamk(at)robots.ox.ac.uk
-* **Webpage**: http://ori.ox.ac.uk/
+* **Webpage**: http://akosiorek.github.io/
 
 I describe the implementation and the issues I run into while working on it in [this blog post](http://akosiorek.github.io/ml/2017/09/03/implementing-air.html).
 
