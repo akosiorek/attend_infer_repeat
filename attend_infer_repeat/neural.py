@@ -63,7 +63,7 @@ class Affine(snt.Linear):
 class MLP(snt.AbstractModule):
     """Implements a multi-layer perceptron"""
 
-    def __init__(self, n_hiddens, hidden_transfer=default_activation, n_out=None, transfer=None, initializers=None):
+    def __init__(self, n_hiddens, hidden_transfer=default_activation, n_out=None, transfer=None, initializers=default_init):
         """Initialises the MLP
 
         :param n_hiddens: int or an interable of ints, number of hidden units in layers
