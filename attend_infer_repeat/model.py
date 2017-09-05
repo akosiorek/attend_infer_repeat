@@ -131,7 +131,7 @@ class AIRModel(object):
             if appearance_prior is not None:
                 step_weight = num_steps_posterior_prob[..., 1:]
                 step_weight = tf.transpose(step_weight, (1, 0))
-                self.prior_step_weight = tf.cumsum(step_weight, axis=0, reverse=True)
+                self.prior_step_weight = tf.stop_gradient(tf.cumsum(step_weight, axis=0, reverse=True))
 
                 prior = Normal(appearance_prior.loc, appearance_prior.scale)
                 posterior = Normal(self.what_loc, self.what_scale)
@@ -192,7 +192,7 @@ class AIRModel(object):
         #     log_prob *= -1 # cause we're maximising
         # self.importance_weight = loss._per_sample
         self.importance_weight = importance_weight
-        if baseline is not None:
+        if self.baseline is not None:
             self.importance_weight -= self.baseline
 
         reinforce_loss_per_sample = tf.stop_gradient(self.importance_weight) * log_prob
@@ -275,8 +275,8 @@ class AIRModel(object):
                 tf.summary.scalar('prior', self.prior_loss.value)
 
                 self.prior_weight = tf.to_float(tf.equal(self.use_prior, True))
-                prior_weight = tf.minimum(tf.to_float(global_step) / 1000., 1.) * self.prior_weight
-                loss.add(self.prior_loss, weight=prior_weight)
+                # prior_weight = tf.minimum(tf.to_float(global_step) / 1000., 1.) * self.prior_weight
+                loss.add(self.prior_loss, weight=self.prior_weight)
 
             # REINFORCE
             opt_loss = loss.value
