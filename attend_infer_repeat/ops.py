@@ -2,6 +2,8 @@ import tensorflow as tf
 
 
 class Loss(object):
+    """Helper class for keeping track of losses"""
+
     def __init__(self):
         self._value = None
         self._per_sample = None
@@ -40,20 +42,11 @@ class Loss(object):
         return self._get_value('_per_sample')
 
 
-# def check_numerics():
-#
-# for k, v in o.iteritems():
-
-#         if np.isnan(v).any():
-#             print 'found NaN in {} in iter {}'.format(k, train_itr)
-#             break
-
-#         if np.isinf(v).any():
-#             print 'found Inf in {} in iter {}'.format(k, train_itr)
-#             break
-
-
 def epsilon_greedy(events, eps):
+    """Epsilon greedy exploration for sampling the steps.
+
+     Doesn't work for some reason when used inside AIRCell. Comments anyone?"""
+
     shape = tf.shape(events)
     do_explore = tf.less(tf.random_uniform(shape, dtype=tf.float32), tf.ones(shape, dtype=tf.float32) * eps)
     random = tf.cast(tf.round(tf.random_uniform(shape, dtype=tf.float32)), events.dtype)

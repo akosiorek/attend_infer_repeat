@@ -5,13 +5,13 @@ import tensorflow as tf
 def masked_apply(tensor, op, mask):
     """Applies `op` to tensor only at locations indicated by `mask` and sets the rest to zero.
 
-    Similar to doing tensor = tf.where(mask, op(tensor), tf.zeros_like(tensor)) behaves correctly
-    when op(tensor) is NaN or inf while tf.where does nor.
+    Similar to doing `tensor = tf.where(mask, op(tensor), tf.zeros_like(tensor))` but it behaves correctly
+    when `op(tensor)` is NaN or inf while tf.where does not.
 
-    :param tensor:
-    :param op:
-    :param mask:
-    :return:
+    :param tensor: tf.Tensor
+    :param op: tf.Op
+    :param mask: tf.Tensor with dtype == bool
+    :return: tf.Tensor
     """
     chosen = tf.boolean_mask(tensor, mask)
     applied = op(chosen)
@@ -22,8 +22,9 @@ def masked_apply(tensor, op, mask):
 
 def geometric_prior(success_prob, n_steps):
     if isinstance(success_prob, tf.Tensor):
-        prob0 = 1 - success_prob
-        probs = tf.ones(n_steps, dtype=tf.float32) * success_prob
+        success_prob = tf.cast(success_prob, tf.float64)
+        prob0 = 1. - success_prob
+        probs = tf.ones(n_steps, dtype=tf.float64) * success_prob
         probs = tf.cumprod(probs)
         probs = tf.concat(([prob0], probs), 0)
         probs /= tf.reduce_sum(probs)
@@ -35,21 +36,51 @@ def geometric_prior(success_prob, n_steps):
     return probs
 
 
-def presence_prob_table(presence_prob):
+def _cumprod(tensor, axis=0):
+    """A custom version of cumprod to prevent NaN gradients when there are zeros in `tensor`
+    as reported here: https://github.com/tensorflow/tensorflow/issues/3862
+
+    :param tensor: tf.Tensor
+    :return: tf.Tensor
+    """
+    transpose_permutation = None
+    n_dim = len(tensor.get_shape())
+    if n_dim > 1 and axis != 0:
+
+        if axis < 0:
+            axis += n_dim
+
+        transpose_permutation = np.arange(n_dim)
+        transpose_permutation[-1], transpose_permutation[0] = 0, axis
+
+    tensor = tf.transpose(tensor, transpose_permutation)
+
+    def prod(acc, x):
+        return acc * x
+
+    prob = tf.scan(prod, tensor)
+    tensor = tf.transpose(prob, transpose_permutation)
+    return tensor
+
+
+def bernoulli_to_modified_geometric(presence_prob):
     presence_prob = tf.cast(presence_prob, tf.float64)
     inv = 1. - presence_prob
-    prob0 = inv[..., 0]
-    prob1 = inv[..., 1] * presence_prob[..., 0]
-    prob2 = inv[..., 2] * presence_prob[..., 1] * presence_prob[..., 0]
-    prob3 = tf.reduce_prod(presence_prob, tf.rank(presence_prob) - 1)
-
-    modified_prob = tf.stack((prob0, prob1, prob2, prob3), len(prob0.get_shape()))
-
+    prob = _cumprod(presence_prob, axis=-1)
+    modified_prob = tf.concat([inv[..., :1], inv[..., 1:] * prob[..., :-1], prob[..., -1:]], -1)
     modified_prob /= tf.reduce_sum(modified_prob, -1, keep_dims=True)
     return tf.cast(modified_prob, tf.float32)
 
 
 def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
+    """Computes KL-divergence KL(p||q) for two probability mass functions (pmf) given in a tabular form.
+
+    :param p: iterable
+    :param q: iterable
+    :param zero_prob_value: float; values below this threshold are treated as zero
+    :param logarg_clip: float or None, clips the argument to the log to lie in [-logarg_clip, logarg_clip] if not None
+    :return: iterable of brodcasted shape of (p * q), per-coordinate value of KL(p||q)
+    """
     p, q = (tf.cast(i, tf.float64) for i in (p, q))
     non_zero = tf.greater(p, zero_prob_value)
     logarg = p / q
@@ -64,6 +95,7 @@ def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
 
 
 def sample_from_1d_tensor(arr, idx):
+    """Takes samples from `arr` indicated by `idx`"""
     arr = tf.convert_to_tensor(arr)
     assert len(arr.get_shape()) == 1, "shape is {}".format(arr.get_shape())
 
@@ -73,6 +105,7 @@ def sample_from_1d_tensor(arr, idx):
 
 
 def sample_from_tensor(tensor, idx):
+    """Takes sample from `tensor` indicated by `idx`, works for minibatches"""
     tensor = tf.convert_to_tensor(tensor)
     if len(tensor.get_shape()) > 2:
         raise NotImplemented
@@ -87,28 +120,30 @@ def sample_from_tensor(tensor, idx):
     return samples
 
 
-def tabular_kl_sampling(p, q, samples_from_p):
-
-    p_samples = sample_from_tensor(p, samples_from_p)
-
-    q_samples = sample_from_1d_tensor(q, samples_from_p)
-    logarg = p_samples / q_samples
-    # kl = tf.log(logarg)
-
-    non_zero = tf.greater(p_samples, 1e-8)
-    kl = masked_apply(logarg, tf.log, non_zero)
-
-    return kl
-
-
 class NumStepsDistribution(object):
+    """Probability distribution used for the number of steps
+
+    Transforms Bernoulli probabilities of an event = 1 into p(n) where n is the number of steps
+    as described in the AIR paper."""
 
     def __init__(self, steps_probs):
-        self._steps_probs = steps_probs
-        self._joint = presence_prob_table(steps_probs)
+        """
 
-    def sample(self):
-        pass
+        :param steps_probs: tensor; Bernoulli success probabilities
+        """
+        self._steps_probs = steps_probs
+        self._joint = bernoulli_to_modified_geometric(steps_probs)
+        self._bernoulli = None
+
+    def sample(self, n=None):
+        if self._bernoulli is None:
+            self._bernoulli = tf.contrib.distributions.Bernoulli(self._steps_probs)
+            return self.sample(n)
+
+        sample = self._bernoulli.sample(n)
+        sample = tf.cumprod(sample, tf.rank(sample) - 1)
+        sample = tf.reduce_sum(sample, -1)
+        return sample
 
     def prob(self, samples=None):
         if samples is None:

@@ -1,8 +1,25 @@
 import numpy as np
 import tensorflow as tf
+from tensorflow.contrib.distributions import NormalWithSoftplusScale
 import sonnet as snt
 
 from neural import MLP
+
+
+class ParametrisedGaussian(snt.AbstractModule):
+
+    def __init__(self, n_params, scale_offset=0., *args, **kwargs):
+        super(ParametrisedGaussian, self).__init__(self.__class__.__name__)
+        self._n_params = n_params
+        self._scale_offset = scale_offset
+        self._create_distrib = lambda x, y: NormalWithSoftplusScale(x, y, *args, **kwargs)
+
+    def _build(self, inpt):
+        transform = snt.Linear(2 * self._n_params)
+        params = transform(inpt)
+        loc, scale = tf.split(params, 2, len(params.get_shape()) - 1)
+        distrib = self._create_distrib(loc, scale + self._scale_offset)
+        return distrib
 
 
 class TransformParam(snt.AbstractModule):
@@ -92,7 +109,7 @@ class SpatialTransformer(snt.AbstractModule):
 
 class StepsPredictor(snt.AbstractModule):
 
-    def __init__(self, n_hidden, steps_bias):
+    def __init__(self, n_hidden, steps_bias=0.):
         super(StepsPredictor, self).__init__(self.__class__.__name__)
         self._n_hidden = n_hidden
         self._steps_bias = steps_bias

@@ -76,11 +76,11 @@ def make_logger(air, sess, summary_writer, train_tensor, train_batches, test_ten
     if air.use_prior:
         exprs['prior_loss'] = air.prior_loss.value
         if air.num_steps_prior is not None:
-            exprs['num_steps_prior_loss'] = air.num_steps_prior_loss
+            exprs['kl_num_steps'] = air.kl_num_steps
 
-        if air.appearance_prior is not None:
-            exprs['appearance_prior_loss'] = air.appearance_prior_loss
-            exprs['where_kl'] = air.where_kl
+        if air.what_prior is not None:
+            exprs['kl_what'] = air.kl_what
+            exprs['kl_where'] = air.kl_where
 
     if air.use_reinforce:
         exprs['baseline_loss'] = air.baseline_loss

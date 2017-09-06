@@ -8,50 +8,40 @@ def create_linear_initializer(input_size):
     """Returns a default initializer for weights of a linear module."""
     stddev = 1. / math.sqrt(input_size * 2)
     return tf.truncated_normal_initializer(stddev=stddev)
-    # return tf.contrib.layers.variance_scaling_initializer()
-    # return tf.contrib.layers.python.layers.initializers.variance_scaling_initializer()
-    # return tf.contrib.layers.variance_scaling_initializer(factor=1.0, mode='FAN_IN')
-
-
-snt.python.modules.basic.create_linear_initializer = create_linear_initializer
-
-
-# def create_bias_initializer(unused_bias_shape):
-#     """Returns a default initializer for the biases of a linear/AddBias module."""
-#     return tf.truncated_normal_initializer(stddev=1e-3)
-
-# snt.python.modules.basic.create_bias_initializer = create_bias_initializer
 
 
 def selu(x):
-    with tf.name_scope('elu') as scope:
+    with tf.name_scope('selu'):
         alpha = 1.6732632423543772848170429916717
         scale = 1.0507009873554804934193349852946
         return scale * tf.where(x >= 0.0, x, alpha * tf.nn.elu(x))
 
+
 default_activation = tf.nn.elu
 
-
-# default_init = {
-#     'w': tf.uniform_unit_scaling_initializer(),
-#     'b': tf.truncated_normal_initializer(stddev=1e-2)
-# }
-default_init = dict()
+default_init = {
+    'w': create_linear_initializer,
+    'b': tf.zeros_initializer()
+}
 
 
-def activation_based_init(func):
+def activation_based_init(nonlinearity):
+    """Returns initialiaation based on a nonlinearlity"""
+
     init = tf.uniform_unit_scaling_initializer()
-    if func == tf.nn.relu:
+    if nonlinearity == tf.nn.relu:
         init = tf.contrib.layers.xavier_initializer()
-    elif func == tf.nn.elu:
+    elif nonlinearity == tf.nn.elu:
         init = tf.contrib.layers.variance_scaling_initializer()
-    elif func == selu:
+    elif nonlinearity == selu:
         init = tf.contrib.layers.variance_scaling_initializer(factor=1.0, mode='FAN_IN')
 
     return init
 
 
 class Affine(snt.Linear):
+    """Layer implementing an affine non-linear transformation"""
+
     def __init__(self, n_output, transfer=default_activation, initializers=None, transfer_based_init=False):
 
         if initializers is None:
@@ -70,26 +60,43 @@ class Affine(snt.Linear):
         return output
 
 
-def MLP(n_hiddens, hidden_transfer=default_activation, n_out=None, transfer=None):
-    n_hiddens = nest.flatten(n_hiddens)
-    transfers = nest.flatten(hidden_transfer)
-    if len(transfers) > 1:
-        assert len(transfers) == len(n_hiddens)
-    else:
-        transfers *= len(n_hiddens)
+class MLP(snt.AbstractModule):
+    """Implements a multi-layer perceptron"""
 
-    layers = []
-    for n_hidden, hidden_transfer in zip(n_hiddens, transfers):
-        layers.append(snt.Linear(n_hidden))
-        layers.append(hidden_transfer)
+    def __init__(self, n_hiddens, hidden_transfer=default_activation, n_out=None, transfer=None, initializers=default_init):
+        """Initialises the MLP
 
-    if n_out is not None:
-        layers.append(snt.Linear(n_out))
+        :param n_hiddens: int or an interable of ints, number of hidden units in layers
+        :param hidden_transfer: callable or iterable; a transfer function for hidden layers or an interable thereof. If it's an iterable its length should be the same as length of `n_hiddens`
+        :param n_out: int or None, number of output units
+        :param transfer: callable or None, a transfer function for the output
+        """
 
-    if transfer is not None:
-        layers.append(transfer)
+        super(MLP, self).__init__(self.__class__.__name__)
+        self._n_hiddens = nest.flatten(n_hiddens)
+        transfers = nest.flatten(hidden_transfer)
+        if len(transfers) > 1:
+            assert len(transfers) == len(self._n_hiddens)
+        else:
+            transfers *= len(self._n_hiddens)
+        self._hidden_transfers = nest.flatten(hidden_transfer)
+        self._n_out = n_out
+        self._transfer = transfer
+        self._initializers = initializers
 
-    module = snt.Sequential(layers)
-    module.output_size = n_out if n_out is not None else n_hiddens[-1]
+    @property
+    def output_size(self):
+        if self._n_out is not None:
+            return self._n_out
+        return self._n_hiddens[-1]
 
-    return module
+    def _build(self, inpt):
+            layers = []
+            for n_hidden, hidden_transfer in zip(self._n_hiddens, self._hidden_transfers):
+                layers.append(Affine(n_hidden, hidden_transfer, self._initializers))
+
+            if self._n_out is not None:
+                layers.append(Affine(self._n_out, self._transfer, self._initializers))
+
+            module = snt.Sequential(layers)
+            return module(inpt)
