@@ -78,20 +78,20 @@ class ConditionalPresencePosteriorTest(TFTestBase):
     @classmethod
     def setUpClass(cls):
         super(ConditionalPresencePosteriorTest, cls).setUpClass()
-        cls.probs = bernoulli_to_geometric(cls.x)
+        cls.probs = bernoulli_to_modified_geometric(cls.x)
 
     def test_shape(self):
 
         x = tf.placeholder(tf.float32, [3])
-        probs = bernoulli_to_geometric(x)
+        probs = bernoulli_to_modified_geometric(x)
         self.assertEqual(tuple(probs.get_shape().as_list()), (4,))
 
         x = tf.placeholder(tf.float32, [7, 3])
-        probs = bernoulli_to_geometric(x)
+        probs = bernoulli_to_modified_geometric(x)
         self.assertEqual(tuple(probs.get_shape().as_list()), (7, 4,))
 
         x = tf.placeholder(tf.float32, [7, 11, 3])
-        probs = bernoulli_to_geometric(x)
+        probs = bernoulli_to_modified_geometric(x)
         self.assertEqual(tuple(probs.get_shape().as_list()), (7, 11, 4,))
 
     def test_obvious(self):
@@ -117,6 +117,24 @@ class ConditionalPresencePosteriorTest(TFTestBase):
         assert_array_equal(p, [.5, .5**2, .5**3, .5**3])
 
 
+class BernoulliToModifiedGeometricTest(TFTestBase):
+
+    vars = {
+        'x': [tf.float32, [None, None]],
+        'y': [tf.float32, [None]]
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        super(BernoulliToModifiedGeometricTest, cls).setUpClass()
+        cls.geom = bernoulli_to_modified_geometric(cls.x)
+        cls.geom_1d = bernoulli_to_modified_geometric(cls.y)
+
+    def test_1d(self):
+        probs = self.eval(self.geom_1d, yy=[.1, .1, .1])
+        print probs
+
+
 class NumStepsKLTest(TFTestBase):
 
     vars = {'x': [tf.float32, [None, None]]}
@@ -127,7 +145,7 @@ class NumStepsKLTest(TFTestBase):
 
         cls.prior = geometric_prior(.005, 3)
 
-        cls.posterior = bernoulli_to_geometric(cls.x)
+        cls.posterior = bernoulli_to_modified_geometric(cls.x)
         cls.posterior_grad = tf.gradients(cls.posterior, cls.x)
 
         cls.posterior_kl = tabular_kl(cls.posterior, cls.prior, 0.)

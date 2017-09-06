@@ -29,8 +29,11 @@ class TFTestBase(unittest.TestCase):
         cls.sess.run(tf.global_variables_initializer())
         cls.sess.run(tf.local_variables_initializer())
 
-    def feed_dict(self, xx, yy=None, mm=None):
-        fd = {self.x: xx}
+    def feed_dict(self, xx=None, yy=None, mm=None):
+        fd = {}
+
+        if xx is not None:
+            fd[self.x] = xx
 
         if yy is not None:
             fd[self.y] = yy

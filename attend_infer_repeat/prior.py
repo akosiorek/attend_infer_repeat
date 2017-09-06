@@ -5,13 +5,13 @@ import tensorflow as tf
 def masked_apply(tensor, op, mask):
     """Applies `op` to tensor only at locations indicated by `mask` and sets the rest to zero.
 
-    Similar to doing tensor = tf.where(mask, op(tensor), tf.zeros_like(tensor)) behaves correctly
-    when op(tensor) is NaN or inf while tf.where does nor.
+    Similar to doing `tensor = tf.where(mask, op(tensor), tf.zeros_like(tensor))` but it behaves correctly
+    when `op(tensor)` is NaN or inf while tf.where does not.
 
-    :param tensor:
-    :param op:
-    :param mask:
-    :return:
+    :param tensor: tf.Tensor
+    :param op: tf.Op
+    :param mask: tf.Tensor with dtype == bool
+    :return: tf.Tensor
     """
     chosen = tf.boolean_mask(tensor, mask)
     applied = op(chosen)
@@ -22,8 +22,9 @@ def masked_apply(tensor, op, mask):
 
 def geometric_prior(success_prob, n_steps):
     if isinstance(success_prob, tf.Tensor):
-        prob0 = 1 - success_prob
-        probs = tf.ones(n_steps, dtype=tf.float32) * success_prob
+        success_prob = tf.cast(success_prob, tf.float64)
+        prob0 = 1. - success_prob
+        probs = tf.ones(n_steps, dtype=tf.float64) * success_prob
         probs = tf.cumprod(probs)
         probs = tf.concat(([prob0], probs), 0)
         probs /= tf.reduce_sum(probs)
@@ -35,16 +36,38 @@ def geometric_prior(success_prob, n_steps):
     return probs
 
 
-def bernoulli_to_geometric(presence_prob):
+def _cumprod(tensor, axis=0):
+    """A custom version of cumprod to prevent NaN gradients when there are zeros in `tensor`
+    as reported here: https://github.com/tensorflow/tensorflow/issues/3862
+
+    :param tensor: tf.Tensor
+    :return: tf.Tensor
+    """
+    transpose_permutation = None
+    n_dim = len(tensor.get_shape())
+    if n_dim > 1 and axis != 0:
+
+        if axis < 0:
+            axis += n_dim
+
+        transpose_permutation = np.arange(n_dim)
+        transpose_permutation[-1], transpose_permutation[0] = 0, axis
+
+    tensor = tf.transpose(tensor, transpose_permutation)
+
+    def prod(acc, x):
+        return acc * x
+
+    prob = tf.scan(prod, tensor)
+    tensor = tf.transpose(prob, transpose_permutation)
+    return tensor
+
+
+def bernoulli_to_modified_geometric(presence_prob):
     presence_prob = tf.cast(presence_prob, tf.float64)
     inv = 1. - presence_prob
-    prob0 = inv[..., 0]
-    prob1 = inv[..., 1] * presence_prob[..., 0]
-    prob2 = inv[..., 2] * presence_prob[..., 1] * presence_prob[..., 0]
-    prob3 = tf.reduce_prod(presence_prob, tf.rank(presence_prob) - 1)
-
-    modified_prob = tf.stack((prob0, prob1, prob2, prob3), len(prob0.get_shape()))
-
+    prob = _cumprod(presence_prob, axis=-1)
+    modified_prob = tf.concat([inv[..., :1], inv[..., 1:] * prob[..., :-1], prob[..., -1:]], -1)
     modified_prob /= tf.reduce_sum(modified_prob, -1, keep_dims=True)
     return tf.cast(modified_prob, tf.float32)
 
@@ -109,10 +132,18 @@ class NumStepsDistribution(object):
         :param steps_probs: tensor; Bernoulli success probabilities
         """
         self._steps_probs = steps_probs
-        self._joint = bernoulli_to_geometric(steps_probs)
+        self._joint = bernoulli_to_modified_geometric(steps_probs)
+        self._bernoulli = None
 
-    def sample(self):
-        pass
+    def sample(self, n=None):
+        if self._bernoulli is None:
+            self._bernoulli = tf.contrib.distributions.Bernoulli(self._steps_probs)
+            return self.sample(n)
+
+        sample = self._bernoulli.sample(n)
+        sample = tf.cumprod(sample, tf.rank(sample) - 1)
+        sample = tf.reduce_sum(sample, -1)
+        return sample
 
     def prob(self, samples=None):
         if samples is None:
