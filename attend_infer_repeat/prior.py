@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+from tensorflow.contrib.distributions import Bernoulli, Geometric
 
 
 def masked_apply(tensor, op, mask):
@@ -21,18 +22,9 @@ def masked_apply(tensor, op, mask):
 
 
 def geometric_prior(success_prob, n_steps):
-    if isinstance(success_prob, tf.Tensor):
-        success_prob = tf.cast(success_prob, tf.float64)
-        prob0 = 1. - success_prob
-        probs = tf.ones(n_steps, dtype=tf.float64) * success_prob
-        probs = tf.cumprod(probs)
-        probs = tf.concat(([prob0], probs), 0)
-        probs /= tf.reduce_sum(probs)
-    else:
-        assert (.0 < success_prob < 1.), 'Success probability has to be within (0., 1.)'
-        probs = [1. - success_prob] + [success_prob ** i for i in xrange(1, n_steps + 1)]
-        probs = np.asarray(probs, dtype=np.float32)
-        probs /= probs.sum()
+    geom = Geometric(probs=1. - success_prob)
+    events = tf.range(n_steps + 1, dtype=geom.dtype)
+    probs = geom.prob(events)
     return probs
 
 
@@ -137,8 +129,7 @@ class NumStepsDistribution(object):
 
     def sample(self, n=None):
         if self._bernoulli is None:
-            self._bernoulli = tf.contrib.distributions.Bernoulli(self._steps_probs)
-            return self.sample(n)
+            self._bernoulli = Bernoulli(self._steps_probs)
 
         sample = self._bernoulli.sample(n)
         sample = tf.cumprod(sample, tf.rank(sample) - 1)

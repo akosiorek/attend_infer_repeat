@@ -34,6 +34,7 @@ class AIRModel(object):
         :param steps_predictor: see :class: AIRCell
         :param output_std: float, std. dev. of the output Gaussian distribution
         :param discrete_steps: see :class: AIRCell
+        :param output_multiplier: float, a factor that multiplies the reconstructed glimpses
         :param explore_eps: see :class: AIRCell
         :param debug: see :class: AIRCell
         """
@@ -95,6 +96,11 @@ class AIRModel(object):
         self.num_step = tf.reduce_mean(self.num_step_per_sample)
         self.gt_num_steps = tf.squeeze(tf.reduce_sum(self.nums, 0))
 
+
+    @staticmethod
+    def _anneal_param(self):
+        pass
+
     def _prior_loss(self, what_prior, where_scale_prior, where_shift_prior,
                     num_steps_prior, global_step):
         """Creates KL-divergence term of the loss"""
@@ -107,13 +113,16 @@ class AIRModel(object):
                         nsp = num_steps_prior
                         val = tf.get_variable('value', initializer=np.float64(num_steps_prior.init), dtype=tf.float64,
                                               trainable=False)
+                        hold_init = getattr(num_steps_prior, 'hold_init', 0.)
+                        step = tf.cast(global_step, tf.float64) - hold_init
+                        step = tf.maximum(step, 0.)
 
                         if num_steps_prior.anneal == 'exp':
                             decay_rate = (nsp.final / nsp.init) ** (float(nsp.steps_div) / nsp.steps)
-                            val = tf.train.exponential_decay(val, global_step, nsp.steps_div, decay_rate)
+                            val = tf.train.exponential_decay(val, step, nsp.steps_div, decay_rate)
 
                         elif num_steps_prior.anneal == 'linear':
-                            val = nsp.final + (nsp.init - nsp.final) * (1. - tf.cast(global_step, tf.float64) / nsp.steps)
+                            val = nsp.final + (nsp.init - nsp.final) * (1. - step / nsp.steps)
 
                         num_steps_prior_value = tf.maximum(np.float64(nsp.final), val)
                 else:
@@ -140,7 +149,7 @@ class AIRModel(object):
             # # this prevents optimising the expectation with respect to q(n)
             # # it's similar to the maximisation step of EM: we have a pre-computed expectation
             # # from the E step, and now we're maximising with respect to the argument of the expectation.
-            # self.prior_step_weight = tf.stop_gradient(step_weight)
+            # self.prior_step_weight = tf.stop_gradient(self.prior_step_weight)
 
             if what_prior is not None:
                 with tf.variable_scope('what'):
