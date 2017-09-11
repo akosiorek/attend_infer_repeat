@@ -233,7 +233,10 @@ def gradient_summaries(gvs, norm=True, ratio=True, histogram=True):
         tf.summary.scalar('grad_norm', grad_norm)
 
     for g, v in gvs:
-        var_name = v.name.split(':')[-1]
+        var_name = v.name.split(':')[0]
+        if g is None:
+            print 'Gradient for variable {} is None'.format(var_name)
+            continue
 
         if ratio:
             log_ratio((g, v), '/'.join(('grad_ratio', var_name)))

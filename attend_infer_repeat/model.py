@@ -17,7 +17,7 @@ class AIRModel(object):
                  n_appearance, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
                  steps_predictor,
                  output_std=1., discrete_steps=True, output_multiplier=1.,
-                 explore_eps=None, debug=False):
+                 explore_eps=None, debug=False, **kwargs):
         """Creates the model.
 
         :param obs: tf.Tensor, images
@@ -37,6 +37,7 @@ class AIRModel(object):
         :param output_multiplier: float, a factor that multiplies the reconstructed glimpses
         :param explore_eps: see :class: AIRCell
         :param debug: see :class: AIRCell
+        :param **kwargs: all other parameters are passed to AIRCell
         """
 
         self.obs = obs
@@ -58,9 +59,10 @@ class AIRModel(object):
             self.batch_size = shape[0]
             self.img_size = shape[1:]
             self._build(transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
-                        steps_predictor)
+                        steps_predictor, kwargs)
 
-    def _build(self, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor):
+    def _build(self, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
+               steps_predictor, kwargs):
         """Build the model. See __init__ for argument description"""
 
         if self.explore_eps is not None:
@@ -71,7 +73,8 @@ class AIRModel(object):
                             canvas_init=None,
                             discrete_steps=self.discrete_steps,
                             explore_eps=self.explore_eps,
-                            debug=self.debug)
+                            debug=self.debug,
+                            **kwargs)
 
         initial_state = self.cell.initial_state(self.obs)
 
@@ -98,8 +101,24 @@ class AIRModel(object):
 
 
     @staticmethod
-    def _anneal_param(self):
-        pass
+    def _anneal_weight(init_val, final_val, anneal_type, global_step, anneal_steps, hold_for=0., steps_div=1.,
+                       dtype=tf.float64):
+
+        val, final, step, hold_for, anneal_steps, steps_div = (tf.cast(i, dtype) for i in
+                                                               (init_val, final_val, global_step, hold_for, anneal_steps, steps_div))
+        step = tf.maximum(step - hold_for, 0.)
+
+        if anneal_type == 'exp':
+            decay_rate = (final / val) ** (steps_div / anneal_steps)
+            val = tf.train.exponential_decay(val, step, steps_div, decay_rate)
+
+        elif anneal_type == 'linear':
+            val = final + (val - final) * (1. - step / anneal_steps)
+        else:
+            raise NotImplementedError
+
+        anneal_weight = tf.maximum(final, val)
+        return anneal_weight
 
     def _prior_loss(self, what_prior, where_scale_prior, where_shift_prior,
                     num_steps_prior, global_step):
@@ -111,25 +130,17 @@ class AIRModel(object):
                 if num_steps_prior.anneal is not None:
                     with tf.variable_scope('num_steps_prior'):
                         nsp = num_steps_prior
-                        val = tf.get_variable('value', initializer=np.float64(num_steps_prior.init), dtype=tf.float64,
-                                              trainable=False)
-                        hold_init = getattr(num_steps_prior, 'hold_init', 0.)
-                        step = tf.cast(global_step, tf.float64) - hold_init
-                        step = tf.maximum(step, 0.)
 
-                        if num_steps_prior.anneal == 'exp':
-                            decay_rate = (nsp.final / nsp.init) ** (float(nsp.steps_div) / nsp.steps)
-                            val = tf.train.exponential_decay(val, step, nsp.steps_div, decay_rate)
-
-                        elif num_steps_prior.anneal == 'linear':
-                            val = nsp.final + (nsp.init - nsp.final) * (1. - step / nsp.steps)
-
-                        num_steps_prior_value = tf.maximum(np.float64(nsp.final), val)
+                        hold_init = getattr(nsp, 'hold_init', 0.)
+                        steps_div = getattr(nsp, 'steps_div', 1.)
+                        steps_prior_success_prob = self._anneal_weight(nsp.init, nsp.final, nsp.anneal, global_step,
+                                                                    nsp.steps, hold_init, steps_div)
                 else:
-                    num_steps_prior_value = num_steps_prior.init
+                    steps_prior_success_prob = num_steps_prior.init
+                self.steps_prior_success_prob = steps_prior_success_prob
 
                 with tf.variable_scope('num_steps'):
-                    prior = geometric_prior(num_steps_prior_value, self.max_steps)
+                    prior = geometric_prior(steps_prior_success_prob, self.max_steps)
                     num_steps_posterior_prob = self.num_steps_distrib.prob()
                     steps_kl = tabular_kl(num_steps_posterior_prob, prior)
                     steps_kl_per_sample = tf.squeeze(tf.reduce_sum(steps_kl, 1))
@@ -151,6 +162,7 @@ class AIRModel(object):
             # # from the E step, and now we're maximising with respect to the argument of the expectation.
             # self.prior_step_weight = tf.stop_gradient(self.prior_step_weight)
 
+            conditional_kl_weight = 1.  #1. - self._anneal_weight(1., 0., 'linear', global_step, 1000, dtype=tf.float32)
             if what_prior is not None:
                 with tf.variable_scope('what'):
 
@@ -163,7 +175,7 @@ class AIRModel(object):
 
                     self.kl_what = tf.reduce_mean(what_kl_per_sample)
                     tf.summary.scalar('kl_what', self.kl_what)
-                    prior_loss.add(self.kl_what, what_kl_per_sample)
+                    prior_loss.add(self.kl_what, what_kl_per_sample, weight=conditional_kl_weight)
 
             if where_scale_prior is not None and where_shift_prior is not None:
                 with tf.variable_scope('where'):
@@ -191,7 +203,7 @@ class AIRModel(object):
                     where_kl_per_sample = tf.reduce_sum(where_kl, 0)
                     self.kl_where = tf.reduce_mean(where_kl_per_sample)
                     tf.summary.scalar('kl_where', self.kl_where)
-                    prior_loss.add(self.kl_where, where_kl_per_sample)
+                    prior_loss.add(self.kl_where, where_kl_per_sample, weight=conditional_kl_weight)
 
         return prior_loss
 
@@ -286,7 +298,9 @@ class AIRModel(object):
             self.rec_loss_per_sample = tf.reduce_sum(rec_loss_per_sample, axis=(1, 2))
             self.rec_loss = tf.reduce_mean(self.rec_loss_per_sample)
             tf.summary.scalar('rec', self.rec_loss)
-            loss.add(self.rec_loss, self.rec_loss_per_sample)
+
+            rec_weight = 1.  # 1. - self._anneal_weight(1., 0., 'linear', global_step, 1000, dtype=tf.float32)
+            loss.add(self.rec_loss, self.rec_loss_per_sample, weight=rec_weight)
 
             # Prior Loss, KL[ q(z, n | x) || p(z, n) ]
             if use_prior is not None:

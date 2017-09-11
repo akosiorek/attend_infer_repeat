@@ -79,7 +79,7 @@ class MLP(snt.AbstractModule):
             assert len(transfers) == len(self._n_hiddens)
         else:
             transfers *= len(self._n_hiddens)
-        self._hidden_transfers = nest.flatten(hidden_transfer)
+        self._hidden_transfers = nest.flatten(transfers)
         self._n_out = n_out
         self._transfer = transfer
         self._initializers = initializers
