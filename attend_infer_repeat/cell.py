@@ -4,7 +4,6 @@ import tensorflow as tf
 from tensorflow.contrib.distributions import Bernoulli, NormalWithSoftplusScale
 
 from modules import SpatialTransformer, ParametrisedGaussian
-from neural import Affine
 
 
 class AIRCell(snt.RNNCore):
@@ -15,7 +14,7 @@ class AIRCell(snt.RNNCore):
 
     def __init__(self, img_size, crop_size, n_appearance,
                  transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
-                 discrete_steps=True, canvas_init=None, explore_eps=None, difference_air=False, debug=False):
+                 discrete_steps=True, canvas_init=None, explore_eps=None, debug=False):
         """Creates the cell
 
         :param img_size: int tuple, size of the image
@@ -33,7 +32,6 @@ class AIRCell(snt.RNNCore):
          float, the canvas starts with a given value, which is trainable.
         :param explore_eps: float or None; if float, it has to be \in (0., .5); step probability is clipped between
          `explore_eps` and (1 - `explore_eps)
-        :param difference_air: boolean, subtracts current predictions before attempting the next processing step
         :param debug: boolean, adds checks for NaNs in the inputs to distributions
         """
 
@@ -47,7 +45,6 @@ class AIRCell(snt.RNNCore):
 
         self._sample_presence = discrete_steps
         self._explore_eps = explore_eps
-        self._difference_air = difference_air
         self._debug = debug
 
         with self._enter_variable_scope():
@@ -124,18 +121,10 @@ class AIRCell(snt.RNNCore):
         img_inpt = img_flat
         img = tf.reshape(img_inpt, (-1,) + tuple(self._img_size))
 
-        if self._difference_air:
-            img -= tf.reshape(canvas_flat, tf.shape(img))
 
         inpt_encoding = self._input_encoder(img)
-
-        if self._difference_air:
-            hidden_state = inpt_encoding
-        else:
-            with tf.variable_scope('rnn_inpt'):
-                rnn_inpt = inpt_encoding
-                # rnn_inpt = tf.concat((inpt_encoding, what_code, where_code, presence), -1)
-                hidden_output, hidden_state = self._transition(rnn_inpt, hidden_state)
+        with tf.variable_scope('rnn_inpt'):
+            hidden_output, hidden_state = self._transition(inpt_encoding, hidden_state)
 
         where_param = self._transform_estimator(hidden_output)
         where_distrib = NormalWithSoftplusScale(*where_param,
@@ -165,9 +154,8 @@ class AIRCell(snt.RNNCore):
         what_distrib = self._what_distrib(what_params)
         what_loc, what_scale = what_distrib.loc, what_distrib.scale
         what_code = what_distrib.sample()
-        # decoder_inpt = tf.concat([what_code, tf.stop_gradient(where_code)], -1)
-        decoder_inpt = what_code
-        decoded = self._glimpse_decoder(decoder_inpt)
+
+        decoded = self._glimpse_decoder(what_code)
         inversed = self._inverse_transformer(decoded, where_code)
 
         with tf.variable_scope('rnn_outputs'):

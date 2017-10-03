@@ -11,8 +11,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
 
-def rect(bbox, c=None, facecolor='none', label=None, ax=None):
-    r = Rectangle((bbox[1], bbox[0]), bbox[3], bbox[2],
+def rect(bbox, c=None, facecolor='none', label=None, ax=None, line_width=1):
+    r = Rectangle((bbox[1], bbox[0]), bbox[3], bbox[2], linewidth=line_width,
                   edgecolor=c, facecolor=facecolor, label=label)
 
     if ax is not None:
@@ -20,12 +20,12 @@ def rect(bbox, c=None, facecolor='none', label=None, ax=None):
     return r
 
 
-def rect_stn(ax, width, height, w, c=None):
-    sx, tx, sy, ty = w
+def rect_stn(ax, width, height, stn_params, c=None, line_width=3):
+    sx, tx, sy, ty = stn_params
     x = width * (1. - sx + tx) / 2
     y = height * (1. - sy + ty) / 2
     bbox = [y - .5, x - .5, height * sy, width * sx]
-    rect(bbox, c, ax=ax)
+    rect(bbox, c, ax=ax, line_width=line_width)
 
 
 def make_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=10):
@@ -83,7 +83,8 @@ def make_logger(air, sess, summary_writer, train_tensor, train_batches, test_ten
             exprs['kl_where'] = air.kl_where
 
     if air.use_reinforce:
-        exprs['baseline_loss'] = air.baseline_loss
+        if air.baseline is not None:
+            exprs['baseline_loss'] = air.baseline_loss
         exprs['reinforce_loss'] = air.reinforce_loss
         exprs['imp_weight'] = tf.reduce_mean(air.importance_weight)
 
@@ -228,18 +229,20 @@ def gradient_summaries(gvs, norm=True, ratio=True, histogram=True):
     :param ratio: boolean, logs ratios if True
     :param histogram: boolean, logs gradient histograms if True
     """
-    if norm:
-        grad_norm = tf.global_norm([gv[0] for gv in gvs])
-        tf.summary.scalar('grad_norm', grad_norm)
 
-    for g, v in gvs:
-        var_name = v.name.split(':')[0]
-        if g is None:
-            print 'Gradient for variable {} is None'.format(var_name)
-            continue
+    with tf.name_scope('grad_summary'):
+        if norm:
+            grad_norm = tf.global_norm([gv[0] for gv in gvs])
+            tf.summary.scalar('grad_norm', grad_norm)
 
-        if ratio:
-            log_ratio((g, v), '/'.join(('grad_ratio', var_name)))
+        for g, v in gvs:
+            var_name = v.name.split(':')[0]
+            if g is None:
+                print 'Gradient for variable {} is None'.format(var_name)
+                continue
 
-        if histogram:
-            tf.summary.histogram('/'.join(('grad_hist', var_name)), g)
+            if ratio:
+                log_ratio((g, v), '/'.join(('grad_ratio', var_name)))
+
+            if histogram:
+                tf.summary.histogram('/'.join(('grad_hist', var_name)), g)

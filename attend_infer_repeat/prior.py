@@ -2,6 +2,8 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.contrib.distributions import Bernoulli, Geometric
 
+from ops import clip_preserve
+
 
 def masked_apply(tensor, op, mask):
     """Applies `op` to tensor only at locations indicated by `mask` and sets the rest to zero.
@@ -22,6 +24,7 @@ def masked_apply(tensor, op, mask):
 
 
 def geometric_prior(success_prob, n_steps):
+    # clipping here is ok since we don't compute gradient wrt success_prob
     success_prob = tf.clip_by_value(success_prob, 1e-7, 1. - 1e-15)
     geom = Geometric(probs=1. - success_prob)
     events = tf.range(n_steps + 1, dtype=geom.dtype)
@@ -79,7 +82,7 @@ def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
     logarg = p / q
 
     if logarg_clip is not None:
-        logarg = tf.clip_by_value(logarg, 1. / logarg_clip, logarg_clip)
+        logarg = clip_preserve(logarg, 1. / logarg_clip, logarg_clip)
 
     log = masked_apply(logarg, tf.log, non_zero)
     kl = p * log
@@ -143,7 +146,9 @@ class NumStepsDistribution(object):
         return sample_from_tensor(self._joint, samples)
 
     def log_prob(self, samples):
-        return tf.log(self.prob(samples))
+        prob = self.prob(samples)
+        prob = clip_preserve(prob, 1e-32, prob)
+        return tf.log(prob)
 
 
 

@@ -6,8 +6,10 @@ from tensorflow.contrib.distributions.python.ops.kullback_leibler import kl as _
 
 from cell import AIRCell
 from evaluation import gradient_summaries
-from ops import Loss
+from ops import Loss, make_moving_average
 from prior import geometric_prior, NumStepsDistribution, tabular_kl
+
+
 
 
 class AIRModel(object):
@@ -80,9 +82,11 @@ class AIRModel(object):
 
         dummy_sequence = tf.zeros((self.max_steps, self.batch_size, 1), name='dummy_sequence')
         outputs, state = tf.nn.dynamic_rnn(self.cell, dummy_sequence, initial_state=initial_state, time_major=True)
+
         for name, output in zip(self.cell.output_names, outputs):
             setattr(self, name, output)
 
+        self.final_state = state[-2]
         self.glimpse = tf.reshape(self.presence * tf.nn.sigmoid(self.glimpse),
                                   (self.max_steps, self.batch_size,) + tuple(self.glimpse_size))
         self.canvas = tf.reshape(self.canvas, (self.max_steps, self.batch_size,) + tuple(self.img_size))
@@ -99,7 +103,6 @@ class AIRModel(object):
         self.num_step = tf.reduce_mean(self.num_step_per_sample)
         self.gt_num_steps = tf.squeeze(tf.reduce_sum(self.nums, 0))
 
-
     @staticmethod
     def _anneal_weight(init_val, final_val, anneal_type, global_step, anneal_steps, hold_for=0., steps_div=1.,
                        dtype=tf.float64):
@@ -109,7 +112,7 @@ class AIRModel(object):
         step = tf.maximum(step - hold_for, 0.)
 
         if anneal_type == 'exp':
-            decay_rate = (final / val) ** (steps_div / anneal_steps)
+            decay_rate = tf.pow(final / val, steps_div / anneal_steps)
             val = tf.train.exponential_decay(val, step, steps_div, decay_rate)
 
         elif anneal_type == 'linear':
@@ -143,26 +146,31 @@ class AIRModel(object):
                     prior = geometric_prior(steps_prior_success_prob, self.max_steps)
                     num_steps_posterior_prob = self.num_steps_distrib.prob()
                     steps_kl = tabular_kl(num_steps_posterior_prob, prior)
-                    steps_kl_per_sample = tf.squeeze(tf.reduce_sum(steps_kl, 1))
+                    self.kl_num_steps_per_sample = tf.squeeze(tf.reduce_sum(steps_kl, 1))
 
-                    self.kl_num_steps = tf.reduce_mean(steps_kl_per_sample)
+                    self.kl_num_steps = tf.reduce_mean(self.kl_num_steps_per_sample)
                     tf.summary.scalar('kl_num_steps', self.kl_num_steps)
 
                     weight = getattr(num_steps_prior, 'weight', 1.)
-                    prior_loss.add(self.kl_num_steps, steps_kl_per_sample, weight=weight)
+                    prior_loss.add(self.kl_num_steps, self.kl_num_steps_per_sample, weight=weight)
 
-            # reverse cumsum of q(n) needed to compute \E_{q(n)} [ KL[ q(z|n) || p(z|n) ]]
-            step_weight = num_steps_posterior_prob[..., 1:]
-            step_weight = tf.transpose(step_weight, (1, 0))
-            step_weight = tf.cumsum(step_weight, axis=0, reverse=True)
+            if num_steps_prior.analytic:
+                # reverse cumsum of q(n) needed to compute \E_{q(n)} [ KL[ q(z|n) || p(z|n) ]]
+                step_weight = num_steps_posterior_prob[..., 1:]
+                step_weight = tf.transpose(step_weight, (1, 0))
+                step_weight = tf.cumsum(step_weight, axis=0, reverse=True)
+            else:
+                step_weight = tf.squeeze(self.presence)
+
             self.prior_step_weight = step_weight
+
 
             # # this prevents optimising the expectation with respect to q(n)
             # # it's similar to the maximisation step of EM: we have a pre-computed expectation
             # # from the E step, and now we're maximising with respect to the argument of the expectation.
             # self.prior_step_weight = tf.stop_gradient(self.prior_step_weight)
 
-            conditional_kl_weight = 1.  #1. - self._anneal_weight(1., 0., 'linear', global_step, 1000, dtype=tf.float32)
+            conditional_kl_weight = 1.
             if what_prior is not None:
                 with tf.variable_scope('what'):
 
@@ -207,25 +215,34 @@ class AIRModel(object):
 
         return prior_loss
 
-    def _reinforce(self, importance_weight, baseline=None):
+    def _reinforce(self, importance_weight, decay_rate):
         """Implements REINFORCE for training the discrete probability distribution over number of steps and train-step
          for the baseline"""
 
-        if baseline is not None:
-            self.baseline = baseline
-
-        if not isinstance(self.baseline, tf.Tensor):
-            self.baseline_module = self.baseline
-            self.baseline = self.baseline_module(self.obs, self.what, self.where, self.presence_prob)
-            self.baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
-                                                   scope=self.baseline_module.variable_scope.name)
-
         log_prob = self.num_steps_distrib.log_prob(self.num_step_per_sample)
-        log_prob = tf.clip_by_value(log_prob, -1e38, 1e38)
+
+        if self.baseline is not None:
+            if not isinstance(self.baseline, tf.Tensor):
+                self.baseline_module = self.baseline
+                self.baseline = self.baseline_module(self.obs, self.what, self.where, self.presence, self.final_state)
+                self.baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                                       scope=self.baseline_module.variable_scope.name)
+            importance_weight -= self.baseline
+
+        if decay_rate is not None:
+            axes = range(len(importance_weight.get_shape()))
+            mean, var = tf.nn.moments(tf.squeeze(importance_weight), axes=axes)
+            self.imp_weight_moving_mean = make_moving_average('imp_weight_moving_mean', mean, 0., decay_rate)
+            self.imp_weight_moving_var = make_moving_average('imp_weight_moving_var', var, 1., decay_rate)
+
+            factor = tf.maximum(tf.sqrt(self.imp_weight_moving_var), 1.)
+            importance_weight = (importance_weight - self.imp_weight_moving_mean) / factor
 
         self.importance_weight = importance_weight
-        if self.baseline is not None:
-            self.importance_weight -= self.baseline
+        axes = range(len(self.importance_weight.get_shape()))
+        imp_weight_mean, imp_weight_var = tf.nn.moments(self.importance_weight, axes)
+        tf.summary.scalar('imp_weight_mean', imp_weight_mean)
+        tf.summary.scalar('imp_weight_var', imp_weight_var)
 
         reinforce_loss_per_sample = tf.stop_gradient(self.importance_weight) * log_prob
         self.reinforce_loss = tf.reduce_mean(reinforce_loss_per_sample)
@@ -236,8 +253,7 @@ class AIRModel(object):
     def _make_baseline_train_step(self, opt, loss, baseline, baseline_vars):
         baseline_target = tf.stop_gradient(loss)
 
-        baseline_loss_per_sample = (baseline_target - baseline) ** 2
-        self.baseline_loss = tf.reduce_mean(baseline_loss_per_sample)
+        self.baseline_loss = .5 * tf.reduce_mean(tf.square(baseline_target - baseline))
         tf.summary.scalar('baseline_loss', self.baseline_loss)
         train_step = opt.minimize(self.baseline_loss, var_list=baseline_vars)
         return train_step
@@ -245,7 +261,8 @@ class AIRModel(object):
     def train_step(self, learning_rate, l2_weight=0., what_prior=None, where_scale_prior=None,
                    where_shift_prior=None,
                    num_steps_prior=None, use_prior=True,
-                   use_reinforce=True, baseline=None):
+                   use_reinforce=True, baseline=None, decay_rate=None,
+                   optimizer=tf.train.RMSPropOptimizer, opt_kwargs=dict(momentum=.9, centered=True)):
         """Creates the train step and the global_step
 
         :param learning_rate: float or tf.Tensor
@@ -261,7 +278,7 @@ class AIRModel(object):
             >>> final=1e-5,     # final value of the prior
             >>> steps_div=1e4,  # relevant for exponential annealing, see :func: tf.exponential_decay
             >>> steps=1e5,      # number of steps for annealing
-            >>> weight=10.      # weight applied to KL[ q(n) || p(n) ], defaults to 1.
+            >>> analytic=True
             >>> )
 
         `init` and `final` describe success probability values in a geometric distribution; for example `init=.9` means
@@ -270,14 +287,20 @@ class AIRModel(object):
         :param use_prior: boolean, if False sets the KL-divergence loss term to 0
         :param use_reinforce: boolean, if False doesn't compute gradients for the number of steps
         :param baseline: callable or None, baseline for variance reduction of REINFORCE
+        :param decay_rate: float, decay rate to use for exp-moving average for NVIL
         :return: train step and global step
         """
+
+        num_steps_prior['analytic'] = getattr(num_steps_prior, 'analytic', True)
 
         self.l2_weight = l2_weight
         self.what_prior = what_prior
         self.where_scale_prior = where_scale_prior
         self.where_shift_prior = where_shift_prior
         self.num_steps_prior = num_steps_prior
+
+        if not hasattr(self, 'baseline'):
+            self.baseline = baseline
 
         self.use_prior = use_prior
         if self.use_prior is not None:
@@ -291,16 +314,14 @@ class AIRModel(object):
             loss = Loss()
             self._train_step = []
             self.learning_rate = tf.Variable(learning_rate, name='learning_rate', trainable=False)
-            make_opt = functools.partial(tf.train.RMSPropOptimizer, momentum=.9, centered=True)
+            make_opt = functools.partial(optimizer, **opt_kwargs)
 
             # Reconstruction Loss, - \E_q [ p(x | z, n) ]
             rec_loss_per_sample = -self.output_distrib.log_prob(self.obs)
             self.rec_loss_per_sample = tf.reduce_sum(rec_loss_per_sample, axis=(1, 2))
             self.rec_loss = tf.reduce_mean(self.rec_loss_per_sample)
             tf.summary.scalar('rec', self.rec_loss)
-
-            rec_weight = 1.  # 1. - self._anneal_weight(1., 0., 'linear', global_step, 1000, dtype=tf.float32)
-            loss.add(self.rec_loss, self.rec_loss_per_sample, weight=rec_weight)
+            loss.add(self.rec_loss, self.rec_loss_per_sample)
 
             # Prior Loss, KL[ q(z, n | x) || p(z, n) ]
             if use_prior is not None:
@@ -313,7 +334,12 @@ class AIRModel(object):
             # REINFORCE
             opt_loss = loss.value
             if use_reinforce:
-                reinforce_loss = self._reinforce(self.rec_loss_per_sample, baseline)
+
+                self.reinforce_imp_weight = self.rec_loss_per_sample
+                if not num_steps_prior.analytic:
+                    self.reinforce_imp_weight += self.prior_loss.per_sample
+
+                reinforce_loss = self._reinforce(self.reinforce_imp_weight, decay_rate)
                 opt_loss += reinforce_loss
 
             baseline_vars = getattr(self, 'baseline_vars', [])
@@ -328,19 +354,23 @@ class AIRModel(object):
 
             opt = make_opt(self.learning_rate)
             gvs = opt.compute_gradients(opt_loss, var_list=model_vars)
-            self._train_step = opt.apply_gradients(gvs, global_step=global_step)
 
-            if self.baseline is not None:
+            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+            with tf.control_dependencies(update_ops):
+                self._train_step = opt.apply_gradients(gvs, global_step=global_step)
+
+            if self.use_reinforce and self.baseline is not None:
                 baseline_opt = make_opt(10 * learning_rate)
-                self._baseline_tran_step = self._make_baseline_train_step(baseline_opt, self.rec_loss_per_sample,
+                self._baseline_tran_step = self._make_baseline_train_step(baseline_opt, self.reinforce_imp_weight,
                                                                           self.baseline, self.baseline_vars)
                 self._true_train_step = self._train_step
                 self._train_step = tf.group(self._true_train_step, self._baseline_tran_step)
-                
-            # Metrics
-            gradient_summaries(gvs)
-            self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.gt_num_steps, self.num_step_per_sample)))
 
-            self.loss = loss
-            self.opt_loss = opt_loss
-            return self._train_step, global_step
+            tf.summary.scalar('num_step', self.num_step)
+        # Metrics
+        gradient_summaries(gvs)
+        self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.gt_num_steps, self.num_step_per_sample)))
+
+        self.loss = loss
+        self.opt_loss = opt_loss
+        return self._train_step, global_step
