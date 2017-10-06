@@ -70,7 +70,8 @@ def make_logger(air, sess, summary_writer, train_tensor, train_batches, test_ten
         'loss': air.loss.value,
         'rec_loss': air.rec_loss,
         'num_step_acc': air.num_step_accuracy,
-        'num_step': air.num_step
+        'num_step': air.num_step,
+        'opt_loss': air.opt_loss
     }
 
     if air.use_prior:

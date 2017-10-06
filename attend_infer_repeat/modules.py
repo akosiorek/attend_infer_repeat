@@ -101,12 +101,20 @@ class SpatialTransformer(snt.AbstractModule):
             if inverse:
                 self._warper = self._warper.inverse()
 
+    def _sample_image(self, img, transform_params):
+        grid_coords = self._warper(transform_params)
+        return snt.resampler(img, grid_coords)
+
     def _build(self, img, transform_params):
         if len(img.get_shape()) == 3:
             img = img[..., tf.newaxis]
 
-        grid_coords = self._warper(transform_params)
-        return snt.resampler(img, grid_coords)
+        if len(transform_params.get_shape()) == 2:
+            return self._sample_image(img, transform_params)
+        else:
+            transform_params = tf.unstack(transform_params, axis=1)
+            samples = [self._sample_image(img, tp) for tp in transform_params]
+            return tf.stack(samples, axis=1)
 
 
 class StepsPredictor(snt.AbstractModule):
@@ -128,16 +136,14 @@ class BaselineMLP(snt.AbstractModule):
         super(BaselineMLP, self).__init__(self.__class__.__name__)
         self._n_hidden = n_hidden
 
-    def _build(self, img, what, where, presence_prob, state=None):
+    def _build(self, *inpts):
 
-        batch_size = int(img.get_shape()[0])
-        parts = [tf.reshape(tf.transpose(i, (1, 0, 2)), (batch_size, -1)) for i in (what, where, presence_prob)]
-        if state is not None:
-            parts += nest.flatten(state)
+        inpts = nest.flatten(inpts)
+        flatten = snt.FlattenTrailingDimensions(dim_from=2)
+        inpts = map(flatten, inpts)
+        baseline_inpts = tf.concat(inpts, -1)
 
-        img_flat = tf.reshape(img, (batch_size, -1))
-        baseline_inpts = [img_flat] + parts
-        baseline_inpts = tf.concat(baseline_inpts, -1)
-        mlp = MLP(self._n_hidden, n_out=1)
+        mlp = snt.BatchApply(MLP(self._n_hidden, n_out=1))
         baseline = mlp(baseline_inpts)
-        return baseline
+
+        return baseline[..., 0]

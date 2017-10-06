@@ -2,7 +2,9 @@ import unittest
 import tensorflow as tf
 import sonnet as snt
 
-from attend_infer_repeat.cell import AIRCell
+from attrdict import AttrDict
+
+from attend_infer_repeat.seq_model import SeqAIRCell
 from attend_infer_repeat.modules import *
 
 
@@ -18,29 +20,32 @@ def make_modules():
     )
 
 
-class CellTest(unittest.TestCase):
+class SeqCellTest(unittest.TestCase):
 
     def test_instantiate(self):
         learning_rate = 1e-4
         batch_size = 10
         img_size = (5, 7)
         crop_size = (2, 2)
-        n_latent = 13
-        n_steps = 3
+        n_what = 13
+        n_steps_per_image = 3
+        n_timesteps = 1
 
-        x = tf.placeholder(tf.float32, (batch_size,) + img_size, name='inpt')
+        x = tf.placeholder(tf.float32, (n_timesteps, batch_size,) + img_size, name='inpt')
 
-        # transition = snt.GRU(n_latent)
         modules = make_modules()
-        air = AIRCell(img_size, crop_size, n_latent, **modules)
-        initial_state = air.initial_state(x)
+        air = SeqAIRCell(n_steps_per_image, img_size, crop_size, n_what, **modules)
+        initial_state = air.initial_state(x[0])
 
-        dummy_sequence = tf.zeros((n_steps, batch_size, 1), name='dummy_sequence')
-        outputs, state = tf.nn.dynamic_rnn(air, dummy_sequence, initial_state=initial_state, time_major=True)
-        canvas, crop, what, what_loc, what_scale, where, where_loc, where_scale, presence_prob, presence = outputs
+        outputs, state = tf.nn.dynamic_rnn(air, x, initial_state=initial_state, time_major=True)
+        outputs = AttrDict({k: v for k, v in zip(air.output_names, outputs)})
 
-        canvas = tf.reshape(canvas, (n_steps, batch_size,) + tuple(img_size))
-        final_canvas = canvas[-1]
+        print 'test:'
+        for k, v in outputs.iteritems():
+            print k, v.get_shape().as_list()
+
+        canvas = tf.reshape(outputs.canvas, (n_timesteps, batch_size, n_steps_per_image) + tuple(img_size))
+        final_canvas = canvas[:, :, -1]
 
         loss = tf.nn.l2_loss(x - final_canvas)
 
@@ -55,8 +60,8 @@ class CellTest(unittest.TestCase):
         xx = np.random.rand(*x.get_shape().as_list())
         res, l = sess.run([outputs, loss], {x: xx})
 
-        for r in res:
-            print r.shape
+        for k, v in res.iteritems():
+            print k, v.shape
 
         print res
 

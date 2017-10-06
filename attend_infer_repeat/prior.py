@@ -104,7 +104,7 @@ def sample_from_tensor(tensor, idx):
     """Takes sample from `tensor` indicated by `idx`, works for minibatches"""
     tensor = tf.convert_to_tensor(tensor)
     if len(tensor.get_shape()) > 2:
-        raise NotImplemented
+        raise NotImplementedError
 
     idx = tf.to_int32(idx)
     shift = tf.range(tf.shape(tensor)[0]) * tf.shape(tensor)[1]
@@ -143,7 +143,17 @@ class NumStepsDistribution(object):
     def prob(self, samples=None):
         if samples is None:
             return self._joint
-        return sample_from_tensor(self._joint, samples)
+
+        shape = tf.shape(samples)
+        n = tf.reduce_prod(shape)
+        joint = tf.reshape(self._joint, (n, -1))
+        samples = tf.reshape(samples, (n,))
+
+        # probs = sample_from_tensor(self._joint, samples)
+        probs = sample_from_tensor(joint, samples)
+        probs = tf.reshape(probs, shape)
+
+        return probs
 
     def log_prob(self, samples):
         prob = self.prob(samples)
