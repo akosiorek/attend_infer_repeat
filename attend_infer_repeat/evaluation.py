@@ -65,7 +65,7 @@ def make_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=10):
         plt.close('all')
 
 
-def make_logger(air, sess, summary_writer, train_tensor, train_batches, test_tensor, test_batches):
+def make_logger(air, sess, summary_writer, train_tensor, n_train_samples, test_tensor, n_test_samples):
     exprs = {
         'loss': air.loss.value,
         'rec_loss': air.rec_loss,
@@ -73,6 +73,9 @@ def make_logger(air, sess, summary_writer, train_tensor, train_batches, test_ten
         'num_step': air.num_step,
         'opt_loss': air.opt_loss
     }
+
+    if air.supervised_nums:
+        exprs['nums_xe'] = air.nums_xe
 
     if air.use_prior:
         exprs['prior_loss'] = air.prior_loss.value
@@ -92,18 +95,18 @@ def make_logger(air, sess, summary_writer, train_tensor, train_batches, test_ten
     if air.l2_weight > 0:
         exprs['l2_loss'] = air.l2_loss
 
-    train_log = make_expr_logger(sess, summary_writer, train_batches / air.batch_size, exprs, name='train')
+    train_log = make_expr_logger(sess, summary_writer, n_train_samples // air.batch_size, exprs, name='train')
 
     data_dict = {
         train_tensor['imgs']: test_tensor['imgs'],
         train_tensor['nums']: test_tensor['nums']
     }
-    test_log = make_expr_logger(sess, summary_writer, test_batches / air.batch_size, exprs, name='test',
+    test_log = make_expr_logger(sess, summary_writer, n_test_samples // air.batch_size, exprs, name='test',
                                 data_dict=data_dict)
 
-    def log(train_itr):
-        train_log(train_itr)
-        test_log(train_itr)
+    def log(train_itr, **kwargs):
+        train_log(train_itr, **kwargs)
+        test_log(train_itr, **kwargs)
         print
 
     return log
@@ -153,7 +156,7 @@ def make_expr_logger(sess, writer, num_batches, expr_dict, name, data_dict=None,
             r = sess.run(expr_dict, feed_dict)
             for k, v in r.iteritems():
                 l[k] += v
-        
+
         for k, v in l.iteritems():
             l[k] /= num_batches_to_eval
         t = time.time() - start

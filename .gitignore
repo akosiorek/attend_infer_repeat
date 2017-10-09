@@ -100,6 +100,6 @@ ENV/
 
 
 .idea
-data/
+./data
 results
 .DS_Store

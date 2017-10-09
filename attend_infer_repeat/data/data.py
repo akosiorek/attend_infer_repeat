@@ -8,6 +8,7 @@ import tensorflow as tf
 from tensorflow.python.util import nest
 from tensorflow.examples.tutorials.mnist import input_data
 
+from attrdict import AttrDict
 from scipy.misc import imresize
 
 
@@ -33,7 +34,8 @@ def template_dimensions(template):
 
 
 def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_objects=(0, 2), n_samples=None,
-                 dtype=np.uint8, expand_nums=True, with_overlap=False):
+                 dtype=np.uint8, expand_nums=True, with_overlap=False, include_templates=False,
+                 include_coords=False):
 
     mnist = input_data.read_data_sets(_MNIST_PATH, one_hot=False)
     mnist_data = getattr(mnist, partition)
@@ -43,12 +45,15 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_o
         n_samples = n_templates
 
     n_objects = nest.flatten(n_objects)
+    if len(n_objects) == 1:
+        n_objects *= 2
+    assert len(n_objects) == 2
     n_objects.sort()
-    max_objects = n_objects[-1]
+    min_objects, max_objects = n_objects
 
     imgs = np.zeros((n_samples,) + tuple(canvas_size), dtype=dtype)
-    labels = np.zeros((n_samples, n_objects[-1]), dtype=np.uint8)
-    nums = np.random.randint(max_objects + 1, size=n_samples, dtype=np.uint8)
+    labels = np.zeros((n_samples, max_objects), dtype=np.uint8)
+    nums = np.random.randint(min_objects, max_objects + 1, size=n_samples, dtype=np.uint8)
 
     templates = np.reshape(mnist_data.images, (-1, 28, 28))
     resize = lambda x: imresize(x, obj_size)
@@ -56,20 +61,26 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_o
 
     def make_p(size):
         position_range = np.asarray(canvas_size) - size
-        return np.round(np.random.rand(n) * position_range).astype(np.int32)
+        return np.round(np.random.rand(2) * position_range).astype(np.int32)
 
     occupancy = np.zeros(canvas_size, dtype=bool)
+
+    used_templates = np.empty(n_samples, dtype=np.object)
+    used_coords = np.empty(n_samples, dtype=np.object)
 
     i = 0
     n_tries = 5
     print 'Creating {} samples'.format(n_samples)
     while i < n_samples:
-        print '{} / {}\r'.format(i, n_samples),
-        sys.stdout.flush()
+        if i % 500 == 0:
+            print '\r{} / {}'.format(i, n_samples),
+            sys.stdout.flush()
 
         tries = 0
         retry = False
         n = nums[i]
+        used_templates[i] = []
+        used_coords[i] = []
         if n > 0:
             indices = np.random.choice(n_templates, n, replace=False)
 
@@ -79,6 +90,7 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_o
                 labels[i, j] = mnist_data.labels[idx]
                 template = resize(templates[idx])
                 st, size = template_dimensions(template)
+                template = template[st[0]:st[0]+size[0], st[1]:st[1]+size[1]]
 
                 p = make_p(size)
                 if not with_overlap:
@@ -89,9 +101,13 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_o
                         retry = True
                         break
 
-                imgs[i, p[0]:p[0]+size[0], p[1]:p[1]+size[1]] = template[st[0]:st[0]+size[0], st[1]:st[1]+size[1]]
-                occupancy[p[0]:p[0]+size[0], p[1]:p[1]+size[1]] = True
+                if include_templates:
+                    used_templates[i].append(template)
+                if include_coords:
+                    used_coords[i].append(p)
 
+                imgs[i, p[0]:p[0]+size[0], p[1]:p[1]+size[1]] = template
+                occupancy[p[0]:p[0]+size[0], p[1]:p[1]+size[1]] = True
         if not retry:
             i += 1
         else:
@@ -104,7 +120,15 @@ def create_mnist(partition='train', canvas_size=(50, 50), obj_size=(28, 28), n_o
             expanded[:n, i] = 1
         nums = expanded
 
-    return dict(imgs=imgs, labels=labels, nums=nums)
+    data = dict(imgs=imgs, labels=labels, nums=nums)
+
+    if include_coords:
+        data['coords'] = used_coords
+
+    if include_templates:
+        data['templates'] = used_templates
+
+    return data
 
 
 def load_data(path, data_path=_MNIST_PATH):
@@ -115,7 +139,7 @@ def load_data(path, data_path=_MNIST_PATH):
 
     data['imgs'] = data['imgs'].astype(np.float32) / 255.
     data['nums'] = data['nums'].astype(np.float32)
-    return data
+    return AttrDict(data)
 
 
 def tensors_from_data(data_dict, batch_size, axes=None, shuffle=False):
@@ -162,10 +186,18 @@ if __name__ == '__main__':
     partitions = ['train', 'validation']
     nums = [60000, 10000]
 
+    canvas_size = (50, 50)
+    obj_size = (28, 28)
+    n_objects = (0, 2)
+    include_templates = False
+    include_coords = False
+
     for p, n in zip(partitions, nums):
         print 'Processing partition "{}"'.format(p)
-        data = create_mnist(p, n_samples=n)
-        filename = 'mnist_{}.pickle'.format(p)
+        data = create_mnist(p, canvas_size, obj_size, n_objects, n_samples=n,
+                            include_coords=include_coords, include_templates=include_templates)
+
+        filename = 'seq_mnist_{}.pickle'.format(p)
         filename = os.path.join(_MNIST_PATH, filename)
     
         print 'saving to "{}"'.format(filename)
