@@ -139,11 +139,14 @@ class BaselineMLP(snt.AbstractModule):
     def _build(self, *inpts):
 
         inpts = nest.flatten(inpts)
-        flatten = snt.FlattenTrailingDimensions(dim_from=2)
+        min_dim = min([i.shape.ndims for i in inpts])
+        flatten = snt.FlattenTrailingDimensions(dim_from=min_dim-1)
         inpts = map(flatten, inpts)
         baseline_inpts = tf.concat(inpts, -1)
 
-        mlp = snt.BatchApply(MLP(self._n_hidden, n_out=1))
+        mlp = MLP(self._n_hidden, n_out=1)
+        if min_dim > 2:
+            mlp = snt.BatchApply(mlp)
         baseline = mlp(baseline_inpts)
 
         return baseline[..., 0]

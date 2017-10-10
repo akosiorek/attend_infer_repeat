@@ -74,8 +74,10 @@ def make_logger(air, sess, summary_writer, train_tensor, n_train_samples, test_t
         'opt_loss': air.opt_loss
     }
 
-    if air.supervised_nums:
-        exprs['nums_xe'] = air.nums_xe
+    try:
+        if air.supervised_nums:
+            exprs['nums_xe'] = air.nums_xe
+    except AttributeError: pass
 
     if air.use_prior:
         exprs['prior_loss'] = air.prior_loss.value
