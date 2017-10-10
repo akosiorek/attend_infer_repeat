@@ -1,6 +1,8 @@
 
 # coding: utf-8
 
+# In[1]:
+
 from os import path as osp
 import numpy as np
 import tensorflow as tf
@@ -12,11 +14,14 @@ from evaluation import make_fig, make_logger
 from data import load_data, tensors_from_data
 from mnist_model import AIRonMNIST
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
 
-# In[ ]:
+
+# In[2]:
 
 learning_rate = 1e-4
-batch_size = 64
 n_steps = 3
 
 results_dir = '../results'
@@ -27,45 +32,48 @@ checkpoint_name = osp.join(logdir, 'model.ckpt')
 axes = {'imgs': 0, 'labels': 0, 'nums': 1}
 
 
-# In[ ]:
+# In[3]:
 
+batch_size = 64
 use_prior = True
 
 num_steps_prior = AttrDict(
     anneal='exp',
-    init=1. - 1e-7,
-    final=1e-5,
+    init=1. - 1e-15,
+    final=1e-7,
     steps_div=1e4,
-    steps=1e5
+    steps=1e5,
+    hold_init=1e3,
 )
 
 appearance_prior = AttrDict(loc=0., scale=1.)
-where_scale_prior = AttrDict(loc=.5, scale=1.)
-where_shift_prior = AttrDict(scale=1.)
+where_scale_prior = AttrDict(loc=0., scale=1.)
+where_shift_prior = AttrDict(loc=0., scale=1.)
 
 use_reinforce = True
 sample_presence = True
-step_bias = 1.
-transform_var_bias = -3.
+step_bias = .75
+transform_var_bias = .5
+output_multiplier = .5
 
-init_explore_eps = .00
+init_explore_eps = 1e-3
 
 l2_weight = 0.
 
 
-# In[ ]:
+# In[4]:
 
 valid_data = load_data('mnist_validation.pickle')
 train_data = load_data('mnist_train.pickle')
 
 
-# In[ ]:
+# In[5]:
 
 tf.reset_default_graph()
 train_tensors = tensors_from_data(train_data, batch_size, axes, shuffle=True)
 valid_tensors = tensors_from_data(valid_data, batch_size, axes, shuffle=False)
 x, valid_x = train_tensors['imgs'], valid_tensors['imgs']
-y, valid_y = train_tensors['nums'], valid_tensors['nums']
+y, test_y = train_tensors['nums'], valid_tensors['nums']
     
 n_hidden = 32 * 8
 n_layers = 2
@@ -81,16 +89,18 @@ air = AIRonMNIST(x, y,
                 steps_pred_hidden=[128, 64],
                 baseline_hidden=[256, 128],
                 transform_var_bias=transform_var_bias,
-                step_bias=step_bias)
+                step_bias=step_bias,
+                output_multiplier=output_multiplier
+)
 
 
-# In[ ]:
+# In[6]:
 
 train_step, global_step = air.train_step(learning_rate, l2_weight, appearance_prior, where_scale_prior,
                             where_shift_prior, num_steps_prior)
 
 
-# In[ ]:
+# In[7]:
 
 config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
@@ -100,15 +110,16 @@ sess.run(tf.global_variables_initializer())
 all_summaries = tf.summary.merge_all()
 
 
-# In[ ]:
+# In[8]:
 
 summary_writer = tf.summary.FileWriter(logdir, sess.graph)
-saver = tf.train.Saver(max_to_keep=100)
+saver = tf.train.Saver()
 
-# In[ ]:
 
-train_batches = train_data['imgs'].shape[0]
-valid_batches = valid_data['imgs'].shape[0]
+# In[9]:
+
+train_batches = train_data['imgs'].shape[0] // batch_size
+valid_batches = valid_data['imgs'].shape[0] // batch_size
 log = make_logger(air, sess, summary_writer, train_tensors, train_batches, valid_tensors, valid_batches)
 
 
@@ -120,7 +131,7 @@ print 'Starting training at iter = {}'.format(train_itr)
 if train_itr == 0:
     log(0)
 
-while train_itr <= 300 * 1e3:
+while train_itr < 3 * 1e5:
         
     train_itr, _ = sess.run([global_step, train_step])
     
@@ -131,6 +142,6 @@ while train_itr <= 300 * 1e3:
     if train_itr % 10000 == 0:
         log(train_itr)
         
-    if train_itr % 10000 == 0:
+    if train_itr % 5000 == 0:
         saver.save(sess, checkpoint_name, global_step=train_itr)
         make_fig(air, sess, logdir, train_itr)    

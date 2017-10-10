@@ -4,7 +4,6 @@ import tensorflow as tf
 from tensorflow.contrib.distributions import Bernoulli, NormalWithSoftplusScale
 
 from modules import SpatialTransformer, ParametrisedGaussian
-from neural import Affine
 
 
 class AIRCell(snt.RNNCore):
@@ -64,11 +63,10 @@ class AIRCell(snt.RNNCore):
             self._glimpse_encoder = glimpse_encoder()
             self._glimpse_decoder = glimpse_decoder(crop_size)
 
-            self._what_distrib = ParametrisedGaussian(n_appearance, scale_offset=-1.,
+            self._what_distrib = ParametrisedGaussian(n_appearance, scale_offset=0.5,
                                                       validate_args=self._debug, allow_nan_stats=not self._debug)
 
             self._steps_predictor = steps_predictor()
-            self._rnn_projection = Affine(self._n_hidden, transfer=None)
 
     @property
     def state_size(self):
@@ -104,10 +102,8 @@ class AIRCell(snt.RNNCore):
         batch_size = img.get_shape().as_list()[0]
         hidden_state = self._transition.initial_state(batch_size, tf.float32, trainable=True)
 
-        where_code = tf.get_variable('where_init', shape=[1, self._n_transform_param], dtype=tf.float32)
-
-        what_code = tf.get_variable('what_init', shape=[1, self._n_appearance], dtype=tf.float32)
-
+        where_code = tf.zeros([1, self._n_transform_param], dtype=tf.float32, name='where_init')
+        what_code = tf.zeros([1, self._n_appearance], dtype=tf.float32, name='what_init')
         flat_canvas = tf.reshape(self._canvas, (1, self._n_pix))
 
         where_code, what_code, flat_canvas = (tf.tile(i, (batch_size, 1)) for i in (where_code, what_code, flat_canvas))
@@ -121,15 +117,14 @@ class AIRCell(snt.RNNCore):
         """Input is unused; it's only to force a maximum number of steps"""
 
         img_flat, canvas_flat, what_code, where_code, hidden_state, presence = state
-        img = tf.reshape(img_flat, (-1,) + tuple(self._img_size))
 
-        inpt_encoding = img
-        inpt_encoding = self._input_encoder(inpt_encoding)
+        img_inpt = img_flat
+        img = tf.reshape(img_inpt, (-1,) + tuple(self._img_size))
 
+
+        inpt_encoding = self._input_encoder(img)
         with tf.variable_scope('rnn_inpt'):
-            rnn_inpt = tf.concat((inpt_encoding, what_code, where_code, presence), -1)
-            rnn_inpt = self._rnn_projection(rnn_inpt)
-            hidden_output, hidden_state = self._transition(rnn_inpt, hidden_state)
+            hidden_output, hidden_state = self._transition(inpt_encoding, hidden_state)
 
         where_param = self._transform_estimator(hidden_output)
         where_distrib = NormalWithSoftplusScale(*where_param,
@@ -143,8 +138,7 @@ class AIRCell(snt.RNNCore):
             presence_prob = self._steps_predictor(hidden_output)
 
             if self._explore_eps is not None:
-                clipped_prob = tf.clip_by_value(presence_prob, self._explore_eps, 1. - self._explore_eps)
-                presence_prob = tf.stop_gradient(clipped_prob - presence_prob) + presence_prob
+                presence_prob = self._explore_eps / 2 + (1 - self._explore_eps) * presence_prob
 
             if self._sample_presence:
                 presence_distrib = Bernoulli(probs=presence_prob, dtype=tf.float32,
@@ -160,13 +154,14 @@ class AIRCell(snt.RNNCore):
         what_distrib = self._what_distrib(what_params)
         what_loc, what_scale = what_distrib.loc, what_distrib.scale
         what_code = what_distrib.sample()
-        decoded = self._glimpse_decoder(tf.concat([what_code, tf.stop_gradient(where_code)], -1))
+
+        decoded = self._glimpse_decoder(what_code)
         inversed = self._inverse_transformer(decoded, where_code)
 
         with tf.variable_scope('rnn_outputs'):
             inversed_flat = tf.reshape(inversed, (-1, self._n_pix))
 
-            canvas_flat = canvas_flat + presence * inversed_flat  # * novelty_flat
+            canvas_flat += presence * inversed_flat
             decoded_flat = tf.reshape(decoded, (-1, np.prod(self._crop_size)))
 
         output = [canvas_flat, decoded_flat, what_code, what_loc, what_scale, where_code, where_loc, where_scale,

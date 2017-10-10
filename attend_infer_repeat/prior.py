@@ -1,5 +1,8 @@
 import numpy as np
 import tensorflow as tf
+from tensorflow.contrib.distributions import Bernoulli, Geometric
+
+from ops import clip_preserve
 
 
 def masked_apply(tensor, op, mask):
@@ -21,18 +24,11 @@ def masked_apply(tensor, op, mask):
 
 
 def geometric_prior(success_prob, n_steps):
-    if isinstance(success_prob, tf.Tensor):
-        success_prob = tf.cast(success_prob, tf.float64)
-        prob0 = 1. - success_prob
-        probs = tf.ones(n_steps, dtype=tf.float64) * success_prob
-        probs = tf.cumprod(probs)
-        probs = tf.concat(([prob0], probs), 0)
-        probs /= tf.reduce_sum(probs)
-    else:
-        assert (.0 < success_prob < 1.), 'Success probability has to be within (0., 1.)'
-        probs = [1. - success_prob] + [success_prob ** i for i in xrange(1, n_steps + 1)]
-        probs = np.asarray(probs, dtype=np.float32)
-        probs /= probs.sum()
+    # clipping here is ok since we don't compute gradient wrt success_prob
+    success_prob = tf.clip_by_value(success_prob, 1e-7, 1. - 1e-15)
+    geom = Geometric(probs=1. - success_prob)
+    events = tf.range(n_steps + 1, dtype=geom.dtype)
+    probs = geom.prob(events)
     return probs
 
 
@@ -86,7 +82,7 @@ def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
     logarg = p / q
 
     if logarg_clip is not None:
-        logarg = tf.clip_by_value(logarg, 1. / logarg_clip, logarg_clip)
+        logarg = clip_preserve(logarg, 1. / logarg_clip, logarg_clip)
 
     log = masked_apply(logarg, tf.log, non_zero)
     kl = p * log
@@ -137,8 +133,7 @@ class NumStepsDistribution(object):
 
     def sample(self, n=None):
         if self._bernoulli is None:
-            self._bernoulli = tf.contrib.distributions.Bernoulli(self._steps_probs)
-            return self.sample(n)
+            self._bernoulli = Bernoulli(self._steps_probs)
 
         sample = self._bernoulli.sample(n)
         sample = tf.cumprod(sample, tf.rank(sample) - 1)
@@ -151,7 +146,9 @@ class NumStepsDistribution(object):
         return sample_from_tensor(self._joint, samples)
 
     def log_prob(self, samples):
-        return tf.log(self.prob(samples))
+        prob = self.prob(samples)
+        prob = clip_preserve(prob, 1e-32, prob)
+        return tf.log(prob)
 
 
 

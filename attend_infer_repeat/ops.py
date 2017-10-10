@@ -1,4 +1,5 @@
 import tensorflow as tf
+from tensorflow.python.training import moving_averages
 
 
 class Loss(object):
@@ -42,13 +43,34 @@ class Loss(object):
         return self._get_value('_per_sample')
 
 
-def epsilon_greedy(events, eps):
-    """Epsilon greedy exploration for sampling the steps.
+def make_moving_average(name, value, init, decay, log=True):
+    """Creates an exp-moving average of `value` and an update op, which is added to UPDATE_OPS collection.
 
-     Doesn't work for some reason when used inside AIRCell. Comments anyone?"""
+    :param name: string, name of the created moving average tf.Variable
+    :param value: tf.Tensor, the value to be averaged
+    :param init: float, an initial value for the moving average
+    :param decay: float between 0 and 1, exponential decay of the moving average
+    :param log: bool, add a summary op if True
+    :return: tf.Tensor, the moving average
+    """
+    var = tf.get_variable(name, shape=value.get_shape(),
+                          initializer=tf.constant_initializer(init), trainable=False)
 
-    shape = tf.shape(events)
-    do_explore = tf.less(tf.random_uniform(shape, dtype=tf.float32), tf.ones(shape, dtype=tf.float32) * eps)
-    random = tf.cast(tf.round(tf.random_uniform(shape, dtype=tf.float32)), events.dtype)
-    events = tf.where(do_explore, random, events)
-    return events
+    update = moving_averages.assign_moving_average(var, value, decay, zero_debias=False)
+    tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, update)
+    if log:
+        tf.summary.scalar(name, var)
+
+    return var
+
+
+def clip_preserve(expr, min, max):
+    """Clips the immediate gradient but preserves the chain rule
+
+    :param expr: tf.Tensor, expr to be clipped
+    :param min: float
+    :param max: float
+    :return: tf.Tensor, clipped expr
+    """
+    clipped = tf.clip_by_value(expr, min, max)
+    return tf.stop_gradient(clipped - expr) + expr

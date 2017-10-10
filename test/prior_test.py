@@ -1,7 +1,7 @@
 import numpy as np
 import unittest
 
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_array_equal, assert_array_almost_equal
 from testing_tools import TFTestBase
 
 from attend_infer_repeat.prior import *
@@ -10,15 +10,18 @@ from attend_infer_repeat.prior import *
 _N_STRESS_ITER = 100
 
 
-class GeometricPriorTest(unittest.TestCase):
+class GeometricPriorTest(TFTestBase):
 
     def test(self):
-        p = geometric_prior(.25, 3)
-        self.assertEqual(p.shape, (4,))
-        self.assertTrue(.5 < p[0] < .75)
-        self.assertTrue(.2 < p[1] < .25)
-        self.assertTrue(.24**2 < p[2] < .25**2)
-        self.assertTrue(.24**3 < p[3] < .25**3)
+        prob = .75
+        # prob = 1. - 1e-15
+        # prob = 1e-7
+        n_steps = 10
+        expected = (1. - prob) * prob ** np.arange(n_steps + 1)
+        p = geometric_prior(prob, n_steps)
+        p = self.eval(p)
+        print p, p.sum()
+        assert_array_almost_equal(p, expected)
 
 
 class TabularKLTest(TFTestBase):

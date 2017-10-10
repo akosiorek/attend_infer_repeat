@@ -1,6 +1,8 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow.contrib.distributions import NormalWithSoftplusScale
+from tensorflow.python.util import nest
+
 import sonnet as snt
 
 from neural import MLP
@@ -126,10 +128,13 @@ class BaselineMLP(snt.AbstractModule):
         super(BaselineMLP, self).__init__(self.__class__.__name__)
         self._n_hidden = n_hidden
 
-    def _build(self, img, what, where, presence_prob):
+    def _build(self, img, what, where, presence_prob, state=None):
 
         batch_size = int(img.get_shape()[0])
         parts = [tf.reshape(tf.transpose(i, (1, 0, 2)), (batch_size, -1)) for i in (what, where, presence_prob)]
+        if state is not None:
+            parts += nest.flatten(state)
+
         img_flat = tf.reshape(img, (batch_size, -1))
         baseline_inpts = [img_flat] + parts
         baseline_inpts = tf.concat(baseline_inpts, -1)
