@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.contrib.distributions import Bernoulli, Geometric
 
-from ops import clip_preserve
+from ops import clip_preserve, sample_from_tensor
 
 
 def masked_apply(tensor, op, mask):
@@ -90,32 +90,6 @@ def tabular_kl(p, q, zero_prob_value=0., logarg_clip=None):
     return tf.cast(kl, tf.float32)
 
 
-def sample_from_1d_tensor(arr, idx):
-    """Takes samples from `arr` indicated by `idx`"""
-    arr = tf.convert_to_tensor(arr)
-    assert len(arr.get_shape()) == 1, "shape is {}".format(arr.get_shape())
-
-    idx = tf.to_int32(idx)
-    arr = tf.gather(tf.squeeze(arr), idx)
-    return arr
-
-
-def sample_from_tensor(tensor, idx):
-    """Takes sample from `tensor` indicated by `idx`, works for minibatches"""
-    tensor = tf.convert_to_tensor(tensor)
-    if len(tensor.get_shape()) > 2:
-        raise NotImplementedError
-
-    idx = tf.to_int32(idx)
-    shift = tf.range(tf.shape(tensor)[0]) * tf.shape(tensor)[1]
-
-    p_flat = tf.reshape(tensor, (-1,))
-    idx_flat = tf.reshape(idx, (-1,)) + shift
-    samples_flat = sample_from_1d_tensor(p_flat, idx_flat)
-    samples = tf.reshape(samples_flat, tf.shape(idx))
-    return samples
-
-
 class NumStepsDistribution(object):
     """Probability distribution used for the number of steps
 
@@ -144,15 +118,7 @@ class NumStepsDistribution(object):
         if samples is None:
             return self._joint
 
-        shape = tf.shape(samples)
-        n = tf.reduce_prod(shape)
-        joint = tf.reshape(self._joint, (n, -1))
-        samples = tf.reshape(samples, (n,))
-
-        # probs = sample_from_tensor(self._joint, samples)
-        probs = sample_from_tensor(joint, samples)
-        probs = tf.reshape(probs, shape)
-
+        probs = sample_from_tensor(self._joint, samples)
         return probs
 
     def log_prob(self, samples):

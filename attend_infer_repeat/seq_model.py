@@ -517,7 +517,7 @@ class SeqAIRModel(object):
         if self.baseline is not None:
             if not isinstance(self.baseline, tf.Tensor):
                 self.baseline_module = self.baseline
-                self.baseline = self.baseline_module(self.obs, self.what, self.where, self.presence)#, self.final_state)
+                self.baseline = self.baseline_module(self.obs, self.what, self.where, self.presence, self.final_state)
                 self.baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                                        scope=self.baseline_module.variable_scope.name)
             importance_weight -= self.baseline

@@ -94,3 +94,44 @@ def anneal_weight(init_val, final_val, anneal_type, global_step, anneal_steps, h
 
     anneal_weight = tf.maximum(final, val)
     return anneal_weight
+
+
+def sample_from_1d_tensor(arr, idx):
+    """Takes samples from `arr` indicated by `idx`
+
+    :param arr:
+    :param idx:
+    :return:
+    """
+    arr = tf.convert_to_tensor(arr)
+    assert len(arr.get_shape()) == 1, "shape is {}".format(arr.get_shape())
+
+    idx = tf.to_int32(idx)
+    arr = tf.gather(tf.squeeze(arr), idx)
+    return arr
+
+
+def sample_from_tensor(tensor, idx):
+    """Takes sample from `tensor` indicated by `idx`, works for minibatches
+
+    :param tensor:
+    :param idx:
+    :return:
+    """
+    tensor = tf.convert_to_tensor(tensor)
+
+    assert tensor.shape.ndims == (idx.shape.ndims + 1) \
+           or ((tensor.shape.ndims == idx.shape.ndims) and (idx.shape[-1] == 1)), \
+        'Shapes: tensor={} vs idx={}'.format(tensor.shape.ndims, idx.shape.ndims)
+
+    batch_shape = tf.shape(tensor)[:-1]
+    trailing_dim = int(tensor.shape[-1])
+    n_elements = tf.reduce_prod(batch_shape)
+    shift = tf.range(n_elements) * trailing_dim
+
+    tensor_flat = tf.reshape(tensor, (-1,))
+    idx_flat = tf.reshape(tf.to_int32(idx), (-1,)) + shift
+    samples_flat = sample_from_1d_tensor(tensor_flat, idx_flat)
+    samples = tf.reshape(samples_flat, batch_shape)
+
+    return samples

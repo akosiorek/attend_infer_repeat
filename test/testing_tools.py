@@ -21,7 +21,10 @@ class TFTestBase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.sess.close()
+        try:
+            cls.sess.close()
+        except AttributeError:
+            pass
         tf.reset_default_graph()
 
     @classmethod
