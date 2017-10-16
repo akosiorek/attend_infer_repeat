@@ -308,7 +308,7 @@ class AIRModel(object):
             self.use_prior = tf.Variable(self.use_prior, trainable=False, name='use_prior')
             self.toggle_prior = self.use_prior.assign(tf.logical_not(self.use_prior))
 
-        self.use_reinforce = use_reinforce
+        self.use_reinforce = use_reinforce and self.discrete_steps
 
         with tf.variable_scope('loss'):
             global_step = tf.train.get_or_create_global_step()

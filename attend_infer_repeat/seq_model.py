@@ -24,7 +24,7 @@ class SeqAIRCell(snt.RNNCore):
 
     def __init__(self, max_steps, img_size, crop_size, n_what,
                  transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
-                 debug=False):
+                 discrete_steps=True, debug=False):
         """Creates the cell
 
         :param max_steps: int, number of maximum steps per image
@@ -48,7 +48,7 @@ class SeqAIRCell(snt.RNNCore):
         self._n_what = n_what
         self._transition = transition
         self._n_hidden = int(self._transition.output_size[0])
-
+        self._discrete_steps = discrete_steps
         self._debug = debug
 
         with self._enter_variable_scope():
@@ -160,9 +160,12 @@ class SeqAIRCell(snt.RNNCore):
 
         with tf.variable_scope('presence'):
             presence_logit = self._steps_predictor(hidden_output)
-            presence_distrib = Bernoulli(logits=presence_logit, dtype=tf.float32,
-                                         validate_args=self._debug, allow_nan_stats=not self._debug)
-            presence = presence_distrib.sample()
+            if self._discrete_steps:
+                presence_distrib = Bernoulli(logits=presence_logit, dtype=tf.float32,
+                                             validate_args=self._debug, allow_nan_stats=not self._debug)
+                presence = presence_distrib.sample()
+            else:
+                presence = tf.nn.sigmoid(presence_logit)
 
             presence = tf.reshape(presence, (batch_size, self._max_steps, 1))
             presence = tf.cumprod(presence, axis=1)
@@ -201,7 +204,7 @@ class SeqAIRModel(object):
     def __init__(self, obs, max_steps, glimpse_size,
                  n_appearance, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
                  steps_predictor,
-                 output_std=1., output_multiplier=1.,
+                 output_std=1., output_multiplier=1., discrete_steps=True,
                  debug=False, **kwargs):
         """Creates the model.
 
@@ -228,6 +231,7 @@ class SeqAIRModel(object):
         self.n_appearance = n_appearance
 
         self.output_std = output_std
+        self.discrete_steps = discrete_steps
         self.debug = debug
 
         with tf.variable_scope(self.__class__.__name__):
@@ -245,7 +249,7 @@ class SeqAIRModel(object):
 
         self.cell = SeqAIRCell(self.max_steps, self.img_size, self.glimpse_size, self.n_appearance, transition,
                             input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
-                            debug=self.debug,
+                            self.discrete_steps, debug=self.debug,
                             **kwargs)
 
         initial_state = self.cell.initial_state(self.obs[0])
@@ -321,7 +325,7 @@ class SeqAIRModel(object):
 
         priors = what_prior, where_shift_prior, where_scale_prior, num_steps_prior
         self.use_prior = any([p is not None for p in priors])
-        self.use_reinforce = use_reinforce
+        self.use_reinforce = use_reinforce and self.discrete_steps
         make_opt = functools.partial(opt, **opt_kwargs)
 
         with tf.variable_scope('loss'):
