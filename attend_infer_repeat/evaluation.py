@@ -65,6 +65,35 @@ def make_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=10):
         plt.close('all')
 
 
+def make_seq_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=5, p_threshold=.5):
+    # TODO: implement checkpoint_dir, global_step and n_samples
+    gt, presence, w, imgs = sess.run([air.obs, air.presence, air.where, air.canvas])
+    nt = imgs.shape[0]
+    fig, axes = plt.subplots(2, nt, figsize=(nt*2, 4), sharex=True, sharey=True)
+    axes = axes.reshape((2, nt))
+    n = np.random.randint(imgs.shape[1])
+    colors = 'brgc'
+
+    for t, ax in enumerate(axes.T):
+        ax[0].imshow(gt[t, n], cmap='gray', vmin=0., vmax=1.)
+
+        pres_time = presence[t, n, :, 0]
+        ps = ', '.join(['{:.2f}'.format(pp) for pp in pres_time])
+        ax[1].set_title(ps)
+        ax[1].imshow(imgs[t, n], cmap='gray', vmin=0., vmax=1.)
+        for a in ax:
+            a.grid(False)
+            a.set_xticks([])
+            a.set_yticks([])
+
+        for i, (p, c) in enumerate(zip(np.greater(pres_time, p_threshold), colors)):
+            if p:
+                rect_stn(ax[1], 48, 48, w[t, n, i], c, line_width=1)
+
+    axes[0, 0].set_ylabel('gt')
+    axes[1, 0].set_ylabel('reconstruction')
+
+
 def make_logger(air, sess, summary_writer, train_tensor, n_train_samples, test_tensor, n_test_samples):
     exprs = {
         'loss': air.loss.value,

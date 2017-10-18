@@ -127,7 +127,7 @@ class StepsPredictor(snt.AbstractModule):
     def _build(self, inpt):
         mlp = MLP(self._n_hidden, n_out=1)
         logit = mlp(inpt) + self._steps_bias
-        return tf.nn.sigmoid(logit)
+        return logit
 
 
 class BaselineMLP(snt.AbstractModule):

@@ -16,6 +16,10 @@ from tensorflow.contrib.distributions import Bernoulli, NormalWithSoftplusScale
 from modules import SpatialTransformer, ParametrisedGaussian
 
 
+def identity_transiton(inpt, state):
+    return inpt
+
+
 class SeqAIRCell(snt.RNNCore):
     """RNN cell that implements the core features of Attend, Infer, Repeat, as described here:
        https://arxiv.org/abs/1603.08575
@@ -24,6 +28,7 @@ class SeqAIRCell(snt.RNNCore):
 
     def __init__(self, max_steps, img_size, crop_size, n_what,
                  transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
+                 what_transiton=identity_transiton, where_transition=identity_transiton, presence_transition=identity_transiton,
                  discrete_steps=True, debug=False):
         """Creates the cell
 
@@ -47,6 +52,9 @@ class SeqAIRCell(snt.RNNCore):
         self._crop_size = crop_size
         self._n_what = n_what
         self._transition = transition
+        self._what_transition = what_transiton
+        self._where_transition = where_transition
+        self._presence_transition = presence_transition
         self._n_hidden = int(self._transition.output_size[0])
         self._discrete_steps = discrete_steps
         self._debug = debug
@@ -96,21 +104,22 @@ class SeqAIRCell(snt.RNNCore):
     def output_names(self):
         return 'canvas glimpse what what_loc what_scale where where_loc where_scale presence_logit presence final_state'.split()
 
-    def initial_state(self, img):
+    def initial_state(self, img, trainable_z=False):
         batch_size = img.get_shape().as_list()[0]
         hidden_state = self._transition.initial_state(batch_size, tf.float32, trainable=True)
 
-        # where_code = tf.zeros([self._max_steps * self._n_where], dtype=tf.float32, name='where_init')
-        # what_code = tf.zeros([self._max_steps * self._n_what], dtype=tf.float32, name='what_init')
-        # where_code, what_code = (tf.tile(i[tf.newaxis], (batch_size,) + tuple([1] * len(i.get_shape())))
-        #                                       for i in (where_code, what_code))
+        if trainable_z:
+            def state_var(name, ndim):
+                var = tf.get_variable(name, [1, ndim], tf.float32)
+                return tf.tile(var, (batch_size, self._max_steps))
 
-        def state_var(name, ndim):
-            var = tf.get_variable(name, [1, ndim], tf.float32)
-            return tf.tile(var, (batch_size, self._max_steps))
-
-        where_code = state_var('where_init', self._n_where)
-        what_code = state_var('what_init', self._n_what)
+            where_code = state_var('where_init', self._n_where)
+            what_code = state_var('what_init', self._n_what)
+        else:
+            where_code = tf.zeros([self._max_steps * self._n_where], dtype=tf.float32, name='where_init')
+            what_code = tf.zeros([self._max_steps * self._n_what], dtype=tf.float32, name='what_init')
+            where_code, what_code = (tf.tile(i[tf.newaxis], (batch_size,) + tuple([1] * len(i.get_shape())))
+                                                  for i in (where_code, what_code))
 
         init_presence_logit = tf.ones((batch_size, self._max_steps), dtype=tf.float32) * 1e3
         state = [hidden_state, what_code, where_code, init_presence_logit]
@@ -123,20 +132,19 @@ class SeqAIRCell(snt.RNNCore):
         # TODO: more sophisticated 'what' transition
 
         batch_size = img.get_shape().as_list()[0]
-        hidden_state = state[0]
-        # what_code, where_code, presence = (tf.reshape(s, (batch_size, self._max_steps, -1)) for s in state[1:])
-        # what_code, where_code = (tf.reshape(s, (batch_size * self._max_steps, -1)) for s in state[1:-1])
-        what_code, where_code = 0., 0.
+        raw_hidden_state = state[0]
+        what, where, presence = (tf.reshape(s, (batch_size, self._max_steps, -1)) for s in state[1:])
 
         inpt_encoding = self._input_encoder(img)
         with tf.variable_scope('inner_rnn'):
             hidden_outputs = []
 
-            # # TODO: indicator that signals time-step transition; allows reset
-            # embedding_size = int(inpt_encoding.shape[-1])
-            # timestep_indicator = tf.get_variable('timestep_indicator', [1, embedding_size], tf.float32)
-            # timestep_indicator = tf.tile(timestep_indicator, (batch_size, 1))
-            # _, hidden_state = self._transition(timestep_indicator, hidden_state)
+            hidden_state = raw_hidden_state
+            # if self._timestep_transition_indicator:
+            #     embedding_size = int(inpt_encoding.shape[-1])
+            #     timestep_indicator = tf.get_variable('timestep_indicator', [1, embedding_size], tf.float32)
+            #     timestep_indicator = tf.tile(timestep_indicator, (batch_size, 1))
+            #     _, hidden_state = self._transition(timestep_indicator, hidden_state)
 
             for i in xrange(self._max_steps):
                 hidden_output, hidden_state = self._transition(inpt_encoding, hidden_state)
@@ -149,12 +157,11 @@ class SeqAIRCell(snt.RNNCore):
         where_distrib = NormalWithSoftplusScale(*where_param,
                                                 validate_args=self._debug, allow_nan_stats=not self._debug)
         where_loc, where_scale = where_distrib.loc, where_distrib.scale
-        where_code_delta = where_distrib.sample()
-        # TODO: delta update of the location
-        where_code += where_code_delta
+        where_delta = where_distrib.sample()
+        where = self._where_transition(where_delta, where)
 
         # reshape to avoid tiling images
-        shaped_where_code = tf.reshape(where_code, (batch_size, self._max_steps, self._n_where))
+        shaped_where_code = tf.reshape(where, (batch_size, self._max_steps, self._n_where))
         cropped = self._spatial_transformer(img, shaped_where_code)
         cropped = tf.reshape(cropped, (batch_size * self._max_steps,) + tuple(self._crop_size))
 
@@ -167,30 +174,32 @@ class SeqAIRCell(snt.RNNCore):
             else:
                 presence = tf.nn.sigmoid(presence_logit)
 
-            presence = tf.reshape(presence, (batch_size, self._max_steps, 1))
-            presence = tf.cumprod(presence, axis=1)
+            new_presence = tf.reshape(presence, (batch_size, self._max_steps, 1))
+            if self._discrete_steps:
+                new_presence = tf.cumprod(new_presence, axis=1)
+            presence = self._presence_transition(new_presence, presence)
 
         what_params = self._glimpse_encoder(cropped)
         what_distrib = self._what_distrib(what_params)
         what_loc, what_scale = what_distrib.loc, what_distrib.scale
-        what_code_delta = what_distrib.sample()
-        # TODO: delta update of appearance
-        what_code += what_code_delta
+        what_delta = what_distrib.sample()
 
-        decoded = self._glimpse_decoder(what_code)
-        inversed = self._inverse_transformer(decoded, where_code)
+        what = self._what_transition(what_delta, what)
+
+        decoded = self._glimpse_decoder(what)
+        inversed = self._inverse_transformer(decoded, where)
         inversed_flat = tf.reshape(inversed, (batch_size, self._max_steps, -1))
         inversed_flat = tf.reduce_sum(presence * inversed_flat, axis=1)
         with tf.variable_scope('rnn_outputs'):
             decoded_flat = tf.reshape(decoded, (-1, self._max_steps * np.prod(self._crop_size)))
 
             # flattening
-            flat = [what_code, what_loc, what_scale, where_code, where_loc, where_scale, presence_logit, presence]
+            flat = [what, what_loc, what_scale, where, where_loc, where_scale, presence_logit, presence]
             flat = [tf.reshape(p, (batch_size, -1)) for p in flat]
 
         output = [inversed_flat, decoded_flat] + flat + [hidden_state]
-        state = [hidden_state,
-                 flat[0],  # what_code
+        state = [raw_hidden_state,
+                 flat[0],  # what
                  flat[3],  # where_code
                  flat[-1],  # presence
                 ]
@@ -249,7 +258,7 @@ class SeqAIRModel(object):
 
         self.cell = SeqAIRCell(self.max_steps, self.img_size, self.glimpse_size, self.n_appearance, transition,
                             input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
-                            self.discrete_steps, debug=self.debug,
+                            discrete_steps=self.discrete_steps, debug=self.debug,
                             **kwargs)
 
         initial_state = self.cell.initial_state(self.obs[0])
@@ -272,13 +281,14 @@ class SeqAIRModel(object):
         self.output_distrib = Normal(self.canvas, self.output_std)
         self.num_steps_distrib = NumStepsDistribution(self.presence_prob[..., 0])
 
-        self.num_step_per_sample = tf.to_float(tf.reduce_sum(self.presence, 2))
+        rounded_presence = tf.round(self.presence)
+        self.num_step_per_sample = tf.to_float(tf.reduce_sum(rounded_presence, 2))
         self.num_step = tf.reduce_mean(self.num_step_per_sample)
 
     def train_step(self, learning_rate, l2_weight=0., what_prior=None, where_scale_prior=None,
                    where_shift_prior=None,
                    num_steps_prior=None,
-                   use_reinforce=True, baseline=None, decay_rate=None, nums=None, supervised_nums=False,
+                   use_reinforce=True, baseline=None, decay_rate=None, nums=None, nums_xe_weight=0.,
                    opt=tf.train.RMSPropOptimizer, opt_kwargs=dict(momentum=.9, centered=True)):
         """Creates the train step and the global_step
 
@@ -318,7 +328,7 @@ class SeqAIRModel(object):
         self.where_shift_prior = where_shift_prior
         self.num_steps_prior = num_steps_prior
         self.nums = nums
-        self.supervised_nums = supervised_nums
+        self.nums_xe_weight = nums_xe_weight
 
         if not hasattr(self, 'baseline'):
             self.baseline = baseline
@@ -351,7 +361,7 @@ class SeqAIRModel(object):
 
             # REINFORCE
             opt_loss = loss.value
-            if use_reinforce:
+            if self.use_reinforce:
 
                 self.reinforce_imp_weight = self.rec_loss_per_sample
                 if num_steps_prior is not None and not num_steps_prior.analytic:
@@ -360,13 +370,10 @@ class SeqAIRModel(object):
                 reinforce_loss = self._reinforce(self.reinforce_imp_weight, decay_rate)
                 opt_loss += reinforce_loss
 
-            if self.supervised_nums:
-                prob = self.num_steps_distrib.prob()
-                prob = ops.clip_preserve(prob, 1e-32, prob)
-                gt = tf.reduce_sum(self.nums, 2)
-                gt = tf.one_hot(tf.to_int32(gt), self.max_steps + 1)
-                self.nums_xe = -1 * tf.reduce_mean(tf.reduce_sum(gt * tf.log(prob), -1))
-                opt_loss += 100 * self.nums_xe
+            if self.nums_xe_weight > 0.:
+                nums_xe = tf.nn.sigmoid_cross_entropy_with_logits(labels=self.nums, logits=self.presence_logit[..., 0])
+                self.nums_xe = tf.reduce_mean(tf.reduce_sum(nums_xe, -1))
+                opt_loss += self.nums_xe_weight * self.nums_xe
 
             baseline_vars = getattr(self, 'baseline_vars', [])
             model_vars = list(set(tf.trainable_variables()) - set(baseline_vars))
@@ -439,9 +446,9 @@ class SeqAIRModel(object):
                 self.steps_prior_success_prob = steps_prior_success_prob
 
                 with tf.variable_scope('num_steps'):
-                    prior = geometric_prior(steps_prior_success_prob, self.max_steps)
-                    num_steps_posterior_prob = self.num_steps_distrib.prob()
-                    steps_kl = tabular_kl(num_steps_posterior_prob, prior)
+                    self.num_steps_prior_prob = geometric_prior(steps_prior_success_prob, self.max_steps)
+                    self.num_steps_posterior_prob = self.num_steps_distrib.prob()
+                    steps_kl = tabular_kl(self.num_steps_posterior_prob, self.num_steps_prior_prob)
                     self.kl_num_steps_per_sample = tf.reduce_sum(steps_kl, 2)
 
                     self.kl_num_steps = tf.reduce_mean(self.kl_num_steps_per_sample)
@@ -452,7 +459,7 @@ class SeqAIRModel(object):
 
                 if num_steps_prior.analytic:
                     # reverse cumsum of q(n) needed to compute \E_{q(n)} [ KL[ q(z|n) || p(z|n) ]]
-                    step_weight = num_steps_posterior_prob[..., 1:]
+                    step_weight = self.num_steps_posterior_prob[..., 1:]
                     step_weight = tf.cumsum(step_weight, axis=-1, reverse=True)#[..., tf.newaxis]
                 else:
                     step_weight = self.presence[..., 0]

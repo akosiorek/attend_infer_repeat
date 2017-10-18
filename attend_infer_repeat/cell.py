@@ -135,7 +135,8 @@ class AIRCell(snt.RNNCore):
         cropped = self._spatial_transformer(img, where_code)
 
         with tf.variable_scope('presence'):
-            presence_prob = self._steps_predictor(hidden_output)
+            presence_logit = self._steps_predictor(hidden_output)
+            presence_prob = tf.nn.sigmoid(presence_logit)
 
             if self._explore_eps is not None:
                 presence_prob = self._explore_eps / 2 + (1 - self._explore_eps) * presence_prob
