@@ -27,7 +27,7 @@ class SeqAIRCell(snt.RNNCore):
     _n_where = 4
 
     def __init__(self, max_steps, img_size, crop_size, n_what,
-                 transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
+                 transition, input_encoder, glimpse_encoder, spatial_transformer, transform_estimator, steps_predictor,
                  what_transiton=identity_transiton, where_transition=identity_transiton, presence_transition=identity_transiton,
                  discrete_steps=True, debug=False):
         """Creates the cell
@@ -39,7 +39,7 @@ class SeqAIRCell(snt.RNNCore):
         :param transition: an RNN cell for maintaining the internal hidden state
         :param input_encoder: callable, encodes the original input image before passing it into the transition
         :param glimpse_encoder: callable, encodes the glimpse into latent representation
-        :param glimpse_decoder: callable, decodes the glimpse from latent representation
+        :param spatial_transformer: callable, extracts a glimpse from an image given transform params
         :param transform_estimator: callabe, transforms the hidden state into parameters for the spatial transformer
         :param steps_predictor: callable, predicts whether to take a step
         :param debug: boolean, adds checks for NaNs in the inputs to distributions
@@ -60,19 +60,12 @@ class SeqAIRCell(snt.RNNCore):
         self._debug = debug
 
         with self._enter_variable_scope():
-            transform_constraints = snt.AffineWarpConstraints.no_shear_2d()
-
-            self._spatial_transformer = SpatialTransformer(img_size, crop_size, transform_constraints)
-            self._inverse_transformer = SpatialTransformer(img_size, crop_size, transform_constraints, inverse=True)
-
+            self._spatial_transformer = spatial_transformer
             self._transform_estimator = transform_estimator(self._n_where)
             self._input_encoder = input_encoder()
             self._glimpse_encoder = glimpse_encoder()
-            self._glimpse_decoder = glimpse_decoder(crop_size)
-
             self._what_distrib = ParametrisedGaussian(n_what, scale_offset=0.5,
                                                       validate_args=self._debug, allow_nan_stats=not self._debug)
-
             self._steps_predictor = steps_predictor()
 
     @property
@@ -87,8 +80,6 @@ class SeqAIRCell(snt.RNNCore):
     @property
     def output_size(self):
         return [
-            np.prod(self._img_size),  # canvas
-            self._max_steps * np.prod(self._crop_size),  # glimpse
             self._max_steps * self._n_what,  # what code
             self._max_steps * self._n_what,  # what loc
             self._max_steps * self._n_what,  # what scale
@@ -102,7 +93,7 @@ class SeqAIRCell(snt.RNNCore):
 
     @property
     def output_names(self):
-        return 'canvas glimpse what what_loc what_scale where where_loc where_scale presence_logit presence final_state'.split()
+        return 'what what_loc what_scale where where_loc where_scale presence_logit presence final_state'.split()
 
     def initial_state(self, img, trainable_z=False):
         batch_size = img.get_shape().as_list()[0]
@@ -185,19 +176,12 @@ class SeqAIRCell(snt.RNNCore):
         what_delta = what_distrib.sample()
 
         what = self._what_transition(what_delta, what)
-
-        decoded = self._glimpse_decoder(what)
-        inversed = self._inverse_transformer(decoded, where)
-        inversed_flat = tf.reshape(inversed, (batch_size, self._max_steps, -1))
-        inversed_flat = tf.reduce_sum(presence * inversed_flat, axis=1)
         with tf.variable_scope('rnn_outputs'):
-            decoded_flat = tf.reshape(decoded, (-1, self._max_steps * np.prod(self._crop_size)))
-
             # flattening
             flat = [what, what_loc, what_scale, where, where_loc, where_scale, presence_logit, presence]
             flat = [tf.reshape(p, (batch_size, -1)) for p in flat]
 
-        output = [inversed_flat, decoded_flat] + flat + [hidden_state]
+        output = flat + [hidden_state]
         state = [raw_hidden_state,
                  flat[0],  # what
                  flat[3],  # where_code
@@ -205,6 +189,23 @@ class SeqAIRCell(snt.RNNCore):
                 ]
 
         return output, state
+
+
+class AIRDecoder(snt.AbstractModule):
+
+    def __init__(self, glimpse_size, glimpse_decoder, inverse_transformer):
+        super(AIRDecoder, self).__init__(self.__class__.__name__)
+        self._inverse_transformer = inverse_transformer
+
+        with self._enter_variable_scope():
+            self._glimpse_decoder = glimpse_decoder(glimpse_size)
+
+    def _build(self, what, where, presence):
+        batch = functools.partial(snt.BatchApply, n_dims=3)
+        glimpse = batch(self._glimpse_decoder)(what)
+        inversed = batch(self._inverse_transformer)(glimpse, where)
+        canvas = tf.reduce_sum(presence[..., tf.newaxis, tf.newaxis] * inversed, axis=2)[..., 0]
+        return canvas, glimpse
 
 
 class SeqAIRModel(object):
@@ -224,7 +225,7 @@ class SeqAIRModel(object):
         :param transition: see :class: AIRCell
         :param input_encoder: see :class: AIRCell
         :param glimpse_encoder: see :class: AIRCell
-        :param glimpse_decoder: see :class: AIRCell
+        :param glimpse_decoder: callable, decodes the glimpse from latent representation
         :param transform_estimator: see :class: AIRCell
         :param steps_predictor: see :class: AIRCell
         :param output_std: float, std. dev. of the output Gaussian distribution
@@ -255,9 +256,14 @@ class SeqAIRModel(object):
     def _build(self, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
                steps_predictor, kwargs):
         """Build the model. See __init__ for argument description"""
+        transform_constraints = snt.AffineWarpConstraints.no_shear_2d()
 
+        inverse_transformer = SpatialTransformer(self.img_size, self.glimpse_size, transform_constraints, inverse=True)
+        self.decoder = AIRDecoder(self.glimpse_size, glimpse_decoder, inverse_transformer)
+
+        spatial_transformer = SpatialTransformer(self.img_size, self.glimpse_size, transform_constraints)
         self.cell = SeqAIRCell(self.max_steps, self.img_size, self.glimpse_size, self.n_appearance, transition,
-                            input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
+                            input_encoder, glimpse_encoder, spatial_transformer, transform_estimator, steps_predictor,
                             discrete_steps=self.discrete_steps, debug=self.debug,
                             **kwargs)
 
@@ -265,17 +271,16 @@ class SeqAIRModel(object):
         outputs, state = tf.nn.dynamic_rnn(self.cell, self.obs, initial_state=initial_state, time_major=True)
 
         n_timesteps = tf.shape(self.obs)[0]
-        for i, o in enumerate(outputs[1:-1]):
+        for i, o in enumerate(outputs[:-1]):
             trailing_dim = int(o.get_shape()[-1]) / self.max_steps
-            outputs[i+1] = tf.reshape(o, (n_timesteps, self.batch_size, self.max_steps, trailing_dim))
+            outputs[i] = tf.reshape(o, (n_timesteps, self.batch_size, self.max_steps, trailing_dim))
 
         for name, output in zip(self.cell.output_names, outputs):
             setattr(self, name, output)
 
         self.presence_prob = tf.nn.sigmoid(self.presence_logit)
-        self.glimpse = tf.reshape(self.glimpse, (-1, self.batch_size, self.max_steps,) + tuple(self.glimpse_size))
 
-        self.canvas = tf.reshape(self.canvas, (-1, self.batch_size) + tuple(self.img_size))
+        self.canvas, self.glimpse = self.decoder(self.what, self.where, self.presence)
         self.canvas *= self.output_multiplier
 
         self.output_distrib = Normal(self.canvas, self.output_std)
@@ -375,8 +380,13 @@ class SeqAIRModel(object):
                 self.nums_xe = tf.reduce_mean(tf.reduce_sum(nums_xe, -1))
                 opt_loss += self.nums_xe_weight * self.nums_xe
 
+            all_vars = set(tf.trainable_variables())
             baseline_vars = getattr(self, 'baseline_vars', [])
-            model_vars = list(set(tf.trainable_variables()) - set(baseline_vars))
+            model_vars = list(all_vars - set(baseline_vars))
+            decoder_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                              scope=self.decoder.variable_scope.name)
+
+            encoder_vars = list(all_vars - set(baseline_vars) - set(decoder_vars))
 
             def print_vars(vars, name=None):
                 if name is not None:
@@ -389,7 +399,8 @@ class SeqAIRModel(object):
                     print v.name, shape
                 print 'total parameters:', n_vars
 
-            print_vars(model_vars, 'model')
+            print_vars(encoder_vars, 'encoder')
+            print_vars(decoder_vars, 'decoder')
             if len(baseline_vars) > 0:
                 print_vars(baseline_vars, 'baseline')
 

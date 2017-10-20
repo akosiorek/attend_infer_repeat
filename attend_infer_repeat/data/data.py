@@ -156,7 +156,7 @@ def tensors_from_data(data_dict, batch_size, axes=None, shuffle=False):
             return np.random.choice(n_entries, batch_size)
 
     else:
-        rolling_idx = itertools.cycle(xrange(0, n_entries, batch_size))
+        rolling_idx = itertools.cycle(xrange(0, n_entries - batch_size + 1, batch_size))
 
         def idx_fun():
             start = next(rolling_idx)
