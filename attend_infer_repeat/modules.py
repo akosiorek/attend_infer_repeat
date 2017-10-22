@@ -93,7 +93,7 @@ class Decoder(snt.AbstractModule):
 
 class SpatialTransformer(snt.AbstractModule):
 
-    def __init__(self, img_size, crop_size, constraints=None, inverse=False):
+    def __init__(self, img_size, crop_size, constraints=snt.AffineWarpConstraints.no_shear_2d(), inverse=False):
         super(SpatialTransformer, self).__init__(self.__class__.__name__)
 
         with self._enter_variable_scope():

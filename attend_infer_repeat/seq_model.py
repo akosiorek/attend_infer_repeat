@@ -26,20 +26,19 @@ class SeqAIRCell(snt.RNNCore):
        """
     _n_where = 4
 
-    def __init__(self, max_steps, img_size, crop_size, n_what,
-                 transition, input_encoder, glimpse_encoder, spatial_transformer, transform_estimator, steps_predictor,
+    def __init__(self, max_steps, img_size, glimpse_size, n_what,
+                 transition, input_encoder, glimpse_encoder, transform_estimator, steps_predictor,
                  what_transiton=identity_transiton, where_transition=identity_transiton, presence_transition=identity_transiton,
                  discrete_steps=True, debug=False):
         """Creates the cell
 
         :param max_steps: int, number of maximum steps per image
         :param img_size: int tuple, size of the image
-        :param crop_size: int tuple, size of the attention glimpse
+        :param glimpse_size: int tuple, size of the attention glimpse
         :param n_what: number of latent units describing the "what"
         :param transition: an RNN cell for maintaining the internal hidden state
         :param input_encoder: callable, encodes the original input image before passing it into the transition
         :param glimpse_encoder: callable, encodes the glimpse into latent representation
-        :param spatial_transformer: callable, extracts a glimpse from an image given transform params
         :param transform_estimator: callabe, transforms the hidden state into parameters for the spatial transformer
         :param steps_predictor: callable, predicts whether to take a step
         :param debug: boolean, adds checks for NaNs in the inputs to distributions
@@ -49,7 +48,7 @@ class SeqAIRCell(snt.RNNCore):
         self._max_steps = max_steps
         self._img_size = img_size
         self._n_pix = np.prod(self._img_size)
-        self._crop_size = crop_size
+        self._glimpse_size = glimpse_size
         self._n_what = n_what
         self._transition = transition
         self._what_transition = what_transiton
@@ -60,7 +59,7 @@ class SeqAIRCell(snt.RNNCore):
         self._debug = debug
 
         with self._enter_variable_scope():
-            self._spatial_transformer = spatial_transformer
+            self._spatial_transformer = SpatialTransformer(self._img_size, self._glimpse_size)
             self._transform_estimator = transform_estimator(self._n_where)
             self._input_encoder = input_encoder()
             self._glimpse_encoder = glimpse_encoder()
@@ -154,7 +153,7 @@ class SeqAIRCell(snt.RNNCore):
         # reshape to avoid tiling images
         shaped_where_code = tf.reshape(where, (batch_size, self._max_steps, self._n_where))
         cropped = self._spatial_transformer(img, shaped_where_code)
-        cropped = tf.reshape(cropped, (batch_size * self._max_steps,) + tuple(self._crop_size))
+        cropped = tf.reshape(cropped, (batch_size * self._max_steps,) + tuple(self._glimpse_size))
 
         with tf.variable_scope('presence'):
             presence_logit = self._steps_predictor(hidden_output)
@@ -193,9 +192,9 @@ class SeqAIRCell(snt.RNNCore):
 
 class AIRDecoder(snt.AbstractModule):
 
-    def __init__(self, glimpse_size, glimpse_decoder, inverse_transformer):
+    def __init__(self, img_size, glimpse_size, glimpse_decoder):
         super(AIRDecoder, self).__init__(self.__class__.__name__)
-        self._inverse_transformer = inverse_transformer
+        self._inverse_transformer = SpatialTransformer(img_size, glimpse_size, inverse=True)
 
         with self._enter_variable_scope():
             self._glimpse_decoder = glimpse_decoder(glimpse_size)
@@ -256,14 +255,10 @@ class SeqAIRModel(object):
     def _build(self, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
                steps_predictor, kwargs):
         """Build the model. See __init__ for argument description"""
-        transform_constraints = snt.AffineWarpConstraints.no_shear_2d()
 
-        inverse_transformer = SpatialTransformer(self.img_size, self.glimpse_size, transform_constraints, inverse=True)
-        self.decoder = AIRDecoder(self.glimpse_size, glimpse_decoder, inverse_transformer)
-
-        spatial_transformer = SpatialTransformer(self.img_size, self.glimpse_size, transform_constraints)
+        self.decoder = AIRDecoder(self.img_size, self.glimpse_size, glimpse_decoder)
         self.cell = SeqAIRCell(self.max_steps, self.img_size, self.glimpse_size, self.n_appearance, transition,
-                            input_encoder, glimpse_encoder, spatial_transformer, transform_estimator, steps_predictor,
+                            input_encoder, glimpse_encoder, transform_estimator, steps_predictor,
                             discrete_steps=self.discrete_steps, debug=self.debug,
                             **kwargs)
 

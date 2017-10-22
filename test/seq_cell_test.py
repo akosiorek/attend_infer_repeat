@@ -14,7 +14,6 @@ def make_modules():
         transition=snt.GRU(3),
         input_encoder=(lambda: Encoder(5)),
         glimpse_encoder=(lambda: Encoder(7)),
-        glimpse_decoder=(lambda x: Decoder(11, x)),
         transform_estimator=(lambda x: StochasticTransformParam(13, x)),
         steps_predictor=(lambda: StepsPredictor(17))
     )
@@ -44,10 +43,8 @@ class SeqCellTest(unittest.TestCase):
         for k, v in outputs.iteritems():
             print k, v.get_shape().as_list()
 
-        canvas = tf.reshape(outputs.canvas, (n_timesteps, batch_size, n_steps_per_image) + tuple(img_size))
-        final_canvas = canvas[:, :, -1]
 
-        loss = tf.nn.l2_loss(x - final_canvas)
+        loss = sum(map(tf.reduce_mean, outputs.values()))
 
         opt = tf.train.AdamOptimizer(learning_rate)
         train_step = opt.minimize(loss)
