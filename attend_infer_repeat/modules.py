@@ -1,4 +1,6 @@
+import functools
 import numpy as np
+
 import tensorflow as tf
 from tensorflow.contrib.distributions import NormalWithSoftplusScale
 from tensorflow.python.util import nest
@@ -150,3 +152,22 @@ class BaselineMLP(snt.AbstractModule):
         baseline = mlp(baseline_inpts)
 
         return baseline[..., 0]
+
+
+class AIRDecoder(snt.AbstractModule):
+
+    def __init__(self, img_size, glimpse_size, glimpse_decoder, batch_dims=2):
+        super(AIRDecoder, self).__init__(self.__class__.__name__)
+        self._inverse_transformer = SpatialTransformer(img_size, glimpse_size, inverse=True)
+        self._batch_dims = batch_dims
+
+        with self._enter_variable_scope():
+            self._glimpse_decoder = glimpse_decoder(glimpse_size)
+
+    def _build(self, what, where, presence):
+        batch = functools.partial(snt.BatchApply, n_dims=self._batch_dims)
+        glimpse = batch(self._glimpse_decoder)(what)
+        inversed = batch(self._inverse_transformer)(glimpse, where)
+        presence = presence[..., tf.newaxis, tf.newaxis]
+        canvas = tf.reduce_sum(presence * inversed, axis=-4)[..., 0]
+        return canvas, glimpse

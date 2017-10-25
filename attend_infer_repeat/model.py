@@ -1,57 +1,53 @@
 import functools
 import numpy as np
+
 import tensorflow as tf
 from tensorflow.contrib.distributions import Normal
 from tensorflow.contrib.distributions.python.ops.kullback_leibler import kl as _kl
+
 
 from cell import AIRCell
 from evaluation import gradient_summaries
 from ops import Loss, make_moving_average
 from prior import geometric_prior, NumStepsDistribution, tabular_kl
-
-
+from modules import AIRDecoder
 
 
 class AIRModel(object):
     """Generic AIR model"""
 
-    def __init__(self, obs, nums, max_steps, glimpse_size,
-                 n_appearance, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
+    def __init__(self, obs, max_steps, glimpse_size,
+                 n_what, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
                  steps_predictor,
                  output_std=1., discrete_steps=True, output_multiplier=1.,
-                 explore_eps=None, debug=False, **kwargs):
+                 debug=False, **kwargs):
         """Creates the model.
 
         :param obs: tf.Tensor, images
-        :param nums: tf.Tensor, number of objects in images
-            Note: it is not used for inference or training; could be removed from here.
         :param max_steps: int, maximum number of steps to take (or objects in the image)
         :param glimpse_size: tuple of ints, size of the attention glimpse
-        :param n_appearance: int, number of latent variables describing an object
+        :param n_what: int, number of latent variables describing an object
         :param transition: see :class: AIRCell
         :param input_encoder: see :class: AIRCell
         :param glimpse_encoder: see :class: AIRCell
-        :param glimpse_decoder: see :class: AIRCell
+        :param glimpse_decoder: callable, decodes the glimpse from latent representation
         :param transform_estimator: see :class: AIRCell
         :param steps_predictor: see :class: AIRCell
         :param output_std: float, std. dev. of the output Gaussian distribution
         :param discrete_steps: see :class: AIRCell
         :param output_multiplier: float, a factor that multiplies the reconstructed glimpses
-        :param explore_eps: see :class: AIRCell
         :param debug: see :class: AIRCell
         :param **kwargs: all other parameters are passed to AIRCell
         """
 
         self.obs = obs
-        self.nums = nums
         self.max_steps = max_steps
         self.glimpse_size = glimpse_size
 
-        self.n_appearance = n_appearance
+        self.n_what = n_what
 
         self.output_std = output_std
         self.discrete_steps = discrete_steps
-        self.explore_eps = explore_eps
         self.debug = debug
 
         with tf.variable_scope(self.__class__.__name__):
@@ -67,14 +63,10 @@ class AIRModel(object):
                steps_predictor, kwargs):
         """Build the model. See __init__ for argument description"""
 
-        if self.explore_eps is not None:
-            self.explore_eps = tf.get_variable('explore_eps', initializer=self.explore_eps, trainable=False)
-
-        self.cell = AIRCell(self.img_size, self.glimpse_size, self.n_appearance, transition,
-                            input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator, steps_predictor,
-                            canvas_init=None,
+        self.decoder = AIRDecoder(self.img_size, self.glimpse_size, glimpse_decoder)
+        self.cell = AIRCell(self.img_size, self.glimpse_size, self.n_what, transition,
+                            input_encoder, glimpse_encoder, transform_estimator, steps_predictor,
                             discrete_steps=self.discrete_steps,
-                            explore_eps=self.explore_eps,
                             debug=self.debug,
                             **kwargs)
 
@@ -84,24 +76,18 @@ class AIRModel(object):
         outputs, state = tf.nn.dynamic_rnn(self.cell, dummy_sequence, initial_state=initial_state, time_major=True)
 
         for name, output in zip(self.cell.output_names, outputs):
+            output = tf.transpose(output, (1, 0, 2))
             setattr(self, name, output)
 
         self.final_state = state[-2]
-        self.glimpse = tf.reshape(self.presence * tf.nn.sigmoid(self.glimpse),
-                                  (self.max_steps, self.batch_size,) + tuple(self.glimpse_size))
-        self.canvas = tf.reshape(self.canvas, (self.max_steps, self.batch_size,) + tuple(self.img_size))
-        self.canvas *= self.output_multiplier
+        self.canvas, self.glimpse = self.decoder(self.what, self.where, self.presence)
+        self.output_distrib = Normal(self.canvas, self.output_std)
 
-        self.final_canvas = self.canvas[-1]
-
-        self.output_distrib = Normal(self.final_canvas, self.output_std)
-
-        posterior_step_probs = tf.transpose(tf.squeeze(self.presence_prob))
+        posterior_step_probs = tf.squeeze(self.presence_prob)
         self.num_steps_distrib = NumStepsDistribution(posterior_step_probs)
 
-        self.num_step_per_sample = tf.to_float(tf.squeeze(tf.reduce_sum(self.presence, 0)))
+        self.num_step_per_sample = tf.to_float(tf.reduce_sum(tf.squeeze(self.presence), -1))
         self.num_step = tf.reduce_mean(self.num_step_per_sample)
-        self.gt_num_steps = tf.squeeze(tf.reduce_sum(self.nums, 0))
 
     @staticmethod
     def _anneal_weight(init_val, final_val, anneal_type, global_step, anneal_steps, hold_for=0., steps_div=1.,
@@ -157,8 +143,7 @@ class AIRModel(object):
             if num_steps_prior.analytic:
                 # reverse cumsum of q(n) needed to compute \E_{q(n)} [ KL[ q(z|n) || p(z|n) ]]
                 step_weight = num_steps_posterior_prob[..., 1:]
-                step_weight = tf.transpose(step_weight, (1, 0))
-                step_weight = tf.cumsum(step_weight, axis=0, reverse=True)
+                step_weight = tf.cumsum(step_weight, axis=-1, reverse=True)
             else:
                 step_weight = tf.squeeze(self.presence)
 
@@ -179,8 +164,7 @@ class AIRModel(object):
 
                     what_kl = _kl(posterior, prior)
                     what_kl = tf.reduce_sum(what_kl, -1) * self.prior_step_weight
-                    what_kl_per_sample = tf.reduce_sum(what_kl, 0)
-
+                    what_kl_per_sample = tf.reduce_sum(what_kl, -1)
                     self.kl_what = tf.reduce_mean(what_kl_per_sample)
                     tf.summary.scalar('kl_what', self.kl_what)
                     prior_loss.add(self.kl_what, what_kl_per_sample, weight=conditional_kl_weight)
@@ -208,7 +192,7 @@ class AIRModel(object):
 
                     shift_kl = _kl(shift_distrib, shift_prior)
                     where_kl = tf.reduce_sum(scale_kl + shift_kl, -1) * self.prior_step_weight
-                    where_kl_per_sample = tf.reduce_sum(where_kl, 0)
+                    where_kl_per_sample = tf.reduce_sum(where_kl, -1)
                     self.kl_where = tf.reduce_mean(where_kl_per_sample)
                     tf.summary.scalar('kl_where', self.kl_where)
                     prior_loss.add(self.kl_where, where_kl_per_sample, weight=conditional_kl_weight)
@@ -224,7 +208,8 @@ class AIRModel(object):
         if self.baseline is not None:
             if not isinstance(self.baseline, tf.Tensor):
                 self.baseline_module = self.baseline
-                wt, we, p = (tf.transpose(i, (1, 0, 2)) for i in ((self.what_loc, self.where_loc, self.presence_prob)))
+                # wt, we, p = (tf.transpose(i, (1, 0, 2)) for i in ((self.what_loc, self.where_loc, self.presence_prob)))
+                wt, we, p = (i for i in ((self.what_loc, self.where_loc, self.presence_prob)))
                 self.baseline = self.baseline_module(self.obs, wt, we, p, self.final_state)
                 self.baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                                        scope=self.baseline_module.variable_scope.name)
@@ -244,7 +229,6 @@ class AIRModel(object):
         imp_weight_mean, imp_weight_var = tf.nn.moments(self.importance_weight, axes)
         tf.summary.scalar('imp_weight_mean', imp_weight_mean)
         tf.summary.scalar('imp_weight_var', imp_weight_var)
-
         reinforce_loss_per_sample = tf.stop_gradient(self.importance_weight) * log_prob
         self.reinforce_loss = tf.reduce_mean(reinforce_loss_per_sample)
         tf.summary.scalar('reinforce_loss', self.reinforce_loss)
@@ -262,7 +246,7 @@ class AIRModel(object):
     def train_step(self, learning_rate, l2_weight=0., what_prior=None, where_scale_prior=None,
                    where_shift_prior=None,
                    num_steps_prior=None, use_prior=True,
-                   use_reinforce=True, baseline=None, decay_rate=None,
+                   use_reinforce=True, baseline=None, decay_rate=None, nums=None,
                    optimizer=tf.train.RMSPropOptimizer, opt_kwargs=dict(momentum=.9, centered=True)):
         """Creates the train step and the global_step
 
@@ -289,6 +273,7 @@ class AIRModel(object):
         :param use_reinforce: boolean, if False doesn't compute gradients for the number of steps
         :param baseline: callable or None, baseline for variance reduction of REINFORCE
         :param decay_rate: float, decay rate to use for exp-moving average for NVIL
+        :param nums: tf.Tensor, number of objects in images
         :return: train step and global step
         """
 
@@ -370,7 +355,9 @@ class AIRModel(object):
             tf.summary.scalar('num_step', self.num_step)
         # Metrics
         gradient_summaries(gvs)
-        self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.gt_num_steps, self.num_step_per_sample)))
+        if nums is not None:
+            self.gt_num_steps = tf.squeeze(tf.reduce_sum(nums, 0))
+            self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.gt_num_steps, self.num_step_per_sample)))
 
         self.loss = loss
         self.opt_loss = opt_loss

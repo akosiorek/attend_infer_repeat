@@ -12,7 +12,6 @@ def make_modules():
         transition=snt.GRU(3),
         input_encoder=(lambda: Encoder(5)),
         glimpse_encoder=(lambda: Encoder(7)),
-        glimpse_decoder=(lambda x: Decoder(11, x)),
         transform_estimator=(lambda x: StochasticTransformParam(13, x)),
         steps_predictor=(lambda: StepsPredictor(17))
     )
@@ -37,12 +36,9 @@ class CellTest(unittest.TestCase):
 
         dummy_sequence = tf.zeros((n_steps, batch_size, 1), name='dummy_sequence')
         outputs, state = tf.nn.dynamic_rnn(air, dummy_sequence, initial_state=initial_state, time_major=True)
-        canvas, crop, what, what_loc, what_scale, where, where_loc, where_scale, presence_prob, presence = outputs
+        what, what_loc, what_scale, where, where_loc, where_scale, presence_prob, presence = outputs
 
-        canvas = tf.reshape(canvas, (n_steps, batch_size,) + tuple(img_size))
-        final_canvas = canvas[-1]
-
-        loss = tf.nn.l2_loss(x - final_canvas)
+        loss = tf.nn.l2_loss(what) + tf.nn.l2_loss(where)
 
         opt = tf.train.AdamOptimizer(learning_rate)
         train_step = opt.minimize(loss)
@@ -61,4 +57,8 @@ class CellTest(unittest.TestCase):
         print res
 
         print 'loss = {}'.format(l)
+        print 'Running train step'
+        x_value = np.random.randn(*x.shape.as_list())
+        sess.run(train_step, {x: x_value})
+
         print 'Done'
