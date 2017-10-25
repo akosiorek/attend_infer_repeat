@@ -224,7 +224,7 @@ class AIRModel(object):
         if self.baseline is not None:
             if not isinstance(self.baseline, tf.Tensor):
                 self.baseline_module = self.baseline
-                wt, we, p = (tf.transpose(i, (1, 0, 2)) for i in ((self.what, self.where, self.presence)))
+                wt, we, p = (tf.transpose(i, (1, 0, 2)) for i in ((self.what_loc, self.where_loc, self.presence_prob)))
                 self.baseline = self.baseline_module(self.obs, wt, we, p, self.final_state)
                 self.baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                                        scope=self.baseline_module.variable_scope.name)
