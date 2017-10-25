@@ -1,11 +1,11 @@
-import time
 import os.path as osp
+import time
 
+import matplotlib
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.util import nest
 
-import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -37,32 +37,38 @@ def make_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=10):
 
     bs = min(n_samples, air.batch_size)
     scale = 1.5
-    figsize = scale * np.asarray((bs, 2 * n_steps + 1))
-    fig, axes = plt.subplots(2 * n_steps + 1, bs, figsize=figsize)
+    figsize = scale * np.asarray((bs, n_steps + 2))
+    fig, axes = plt.subplots(n_steps + 2, bs, figsize=figsize)
 
+    # ground-truth
     for i, ax in enumerate(axes[0]):
         ax.imshow(xx[i], cmap='gray', vmin=0, vmax=1)
 
-    for i, ax_row in enumerate(axes[1:1 + n_steps]):
-        for j, ax in enumerate(ax_row):
-            ax.imshow(pred_canvas[i, j], cmap='gray', vmin=0, vmax=1)
+    # reconstructions with marked steps
+    for i, ax in enumerate(axes[1]):
+        ax.imshow(pred_canvas[i], cmap='gray', vmin=0, vmax=1)
+        for j, c in zip(xrange(n_steps), 'rgbym'):
             if pres[i, j, 0] > .5:
-                rect_stn(ax, width, height, w[i, j], 'r')
-
-    for i, ax_row in enumerate(axes[1 + n_steps:]):
+                rect_stn(ax, width, height, w[i, j], c, line_width=2.)
+    # glimpses
+    for i, ax_row in enumerate(axes[2:]):
         for j, ax in enumerate(ax_row):
-            ax.imshow(pred_crop[i, j], cmap='gray')  # , vmin=0, vmax=1)
-            ax.set_title('{:d} with p({:d}) = {:.02f}'.format(int(pres[i, j, 0]), i + 1, prob[j, i].squeeze()),
+            ax.imshow(pred_crop[j, i], cmap='gray')
+            ax.set_title('{:d} with p({:d}) = {:.02f}'.format(int(pres[j, i, 0]), i + 1, prob[j, i].squeeze()),
                          fontsize=4 * scale)
+            ax_row[0].set_ylabel('glimpse #{}'.format(i + 1))
 
-    for ax in axes.flatten():
-        ax.xaxis.set_visible(False)
-        ax.yaxis.set_visible(False)
+            for ax in axes.flatten():
+                ax.xaxis.set_ticks([])
+            ax.yaxis.set_ticks([])
 
-    if checkpoint_dir is not None:
-        fig_name = osp.join(checkpoint_dir, 'progress_fig_{}.png'.format(global_step))
-        fig.savefig(fig_name, dpi=300)
-        plt.close('all')
+            axes[0, 0].set_ylabel('ground-truth')
+            axes[1, 0].set_ylabel('reconstruction')
+
+            if checkpoint_dir is not None:
+                fig_name = osp.join(checkpoint_dir, 'progress_fig_{}.png'.format(global_step))
+            fig.savefig(fig_name, dpi=300)
+            plt.close('all')
 
 
 def make_seq_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=5, p_threshold=.5):
