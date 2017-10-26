@@ -26,43 +26,32 @@ class ParametrisedGaussian(snt.AbstractModule):
         return distrib
 
 
-class TransformParam(snt.AbstractModule):
+class StochasticTransformParam(snt.AbstractModule):
 
-    def __init__(self, n_hidden, n_param, max_crop_size=1.0):
-        super(TransformParam, self).__init__(self.__class__.__name__)
+    def __init__(self, n_hidden, min_glimpse_size=0.0, max_glimpse_size=1.0, scale_bias=-2.):
+        super(StochasticTransformParam, self).__init__(self.__class__.__name__)
         self._n_hidden = n_hidden
-        self._n_param = n_param
-        self._max_crop_size = max_crop_size
-
-    def _embed(self, inpt):
-        flatten = snt.BatchFlatten()
-        mlp = MLP(self._n_hidden, n_out=self._n_param)
-        seq = snt.Sequential([flatten, mlp])
-        return seq(inpt)
-
-    def _transform(self, inpt):
-        sx, tx, sy, ty = tf.split(inpt, 4, 1)
-        sx, sy = (self._max_crop_size * tf.nn.sigmoid(s) for s in (sx, sy))
-        tx, ty = (tf.nn.tanh(t) for t in (tx, ty))
-        output = tf.concat((sx, tx, sy, ty), -1)
-        return output
-
-    def _build(self, inpt):
-        embedding = self._build(inpt)
-        return self._transform(embedding)
-
-
-class StochasticTransformParam(TransformParam):
-    def __init__(self, n_hidden, n_param, max_crop_size=1.0, scale_bias=-2.):
-        super(StochasticTransformParam, self).__init__(n_hidden, n_param * 2, max_crop_size)
+        assert 0 <= min_glimpse_size < max_glimpse_size <= 1.
+        self._min_glimpse_size = min_glimpse_size
+        self._max_glimpse_size = max_glimpse_size
         self._scale_bias = scale_bias
 
     def _build(self, inpt):
-        embedding = self._embed(inpt)
-        n_params = self._n_param / 2
-        locs = self._transform(embedding[..., :n_params])
-        scales = embedding[..., n_params:]
-        return locs, scales + self._scale_bias
+
+        flatten = snt.BatchFlatten()
+        mlp = MLP(self._n_hidden, n_out=8)
+        seq = snt.Sequential([flatten, mlp])
+        params = seq(inpt)
+
+        scale_logit, shift_logit = tf.split(params[..., :4], 2, 1)
+
+        constant, relative = self._min_glimpse_size, self._max_glimpse_size - self._min_glimpse_size
+        scale = constant + relative * tf.nn.sigmoid(scale_logit)
+
+        shift = tf.nn.tanh(shift_logit)
+        locs = tf.concat((scale, shift), -1)
+
+        return locs, params[..., 4:] + self._scale_bias
 
 
 class Encoder(snt.AbstractModule):
@@ -95,10 +84,11 @@ class Decoder(snt.AbstractModule):
 
 class SpatialTransformer(snt.AbstractModule):
 
-    def __init__(self, img_size, crop_size, constraints=snt.AffineWarpConstraints.no_shear_2d(), inverse=False):
+    def __init__(self, img_size, crop_size, inverse=False):
         super(SpatialTransformer, self).__init__(self.__class__.__name__)
 
         with self._enter_variable_scope():
+            constraints = snt.AffineWarpConstraints.no_shear_2d()
             self._warper = snt.AffineGridWarper(img_size, crop_size, constraints)
             if inverse:
                 self._warper = self._warper.inverse()
@@ -108,6 +98,16 @@ class SpatialTransformer(snt.AbstractModule):
         return snt.resampler(img, grid_coords)
 
     def _build(self, img, transform_params):
+        """Assume that `transform_param` has the shape of (..., n_params) where n_params = n_scales + n_shifts
+        and:
+            scale = transform_params[..., :n_scales]
+            shift = transform_params[..., n_scales:n_scales+n_shifts]
+        """
+
+        axis = transform_params.shape.ndims - 1
+        sx, sy, tx, ty = tf.split(transform_params, 4, axis=axis)
+        transform_params = tf.concat([sx, tx, sy, ty], -1)
+
         if len(img.get_shape()) == 3:
             img = img[..., tf.newaxis]
 

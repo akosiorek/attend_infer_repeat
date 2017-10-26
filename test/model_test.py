@@ -4,8 +4,11 @@ import sonnet as snt
 
 from attrdict import AttrDict
 
-from attend_infer_repeat.model import AIRModel
+from attend_infer_repeat.model import AIRModel, AIRPriorMixin
 from attend_infer_repeat.modules import *
+
+
+class AIRModelWithPriors(AIRModel, AIRPriorMixin): pass
 
 
 def make_modules():
@@ -15,7 +18,7 @@ def make_modules():
         input_encoder=(lambda: Encoder(5)),
         glimpse_encoder=(lambda: Encoder(7)),
         glimpse_decoder=(lambda x: Decoder(11, x)),
-        transform_estimator=(lambda x: StochasticTransformParam(13, x)),
+        transform_estimator=(lambda: StochasticTransformParam(13)),
         steps_predictor=(lambda: StepsPredictor(17))
     )
 
@@ -30,30 +33,15 @@ class ModelTest(unittest.TestCase):
         n_what = 13
         n_steps_per_image = 3
 
-        num_steps_prior = AttrDict(
-            anneal='exp',
-            init=1.,
-            final=1e-5,
-            steps_div=1e4,
-            steps=1e5,
-            hold_init=1e3,
-            analytic=True
-        )
-
-        what_prior = AttrDict(loc=0., scale=1.)
-        where_scale_prior = AttrDict(loc=0., scale=1.)
-        where_shift_prior = AttrDict(loc=0., scale=1.)
-
         imgs = tf.placeholder(tf.float32, (batch_size,) + img_size, name='inpt')
         nums = tf.placeholder(tf.float32, (batch_size, 1), name='nums')
 
         modules = make_modules()
-        air = AIRModel(imgs, n_steps_per_image, crop_size, n_what, **modules)
+        air = AIRModelWithPriors(imgs, n_steps_per_image, crop_size, n_what, **modules)
         outputs = AttrDict({k: getattr(air, k) for k in air.cell.output_names})
         print 'Constructed model'
 
-        train_step = air.train_step(learning_rate, 1e-4, what_prior, where_scale_prior,
-                                    where_shift_prior, num_steps_prior, nums=nums)
+        train_step = air.train_step(learning_rate, 1e-4, nums=nums)
         loss = air.loss.value
         print 'Computed gradients'
 

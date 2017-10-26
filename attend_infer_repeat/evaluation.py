@@ -21,7 +21,7 @@ def rect(bbox, c=None, facecolor='none', label=None, ax=None, line_width=1):
 
 
 def rect_stn(ax, width, height, stn_params, c=None, line_width=3):
-    sx, tx, sy, ty = stn_params
+    sx, sy, tx, ty = stn_params
     x = width * (1. - sx + tx) / 2
     y = height * (1. - sy + ty) / 2
     bbox = [y - .5, x - .5, height * sy, width * sx]
@@ -32,7 +32,7 @@ def make_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=10, dpi
     n_steps = air.max_steps
 
     xx, pred_canvas, pred_crop, prob, pres, w = sess.run(
-        [air.obs, air.canvas, air.glimpse, air.num_steps_distrib.prob()[..., 1:], air.presence, air.where])
+        [air.obs, air.canvas, air.glimpse, air.num_steps_posterior.prob()[..., 1:], air.presence, air.where])
     height, width = xx.shape[1:]
 
     bs = min(n_samples, air.batch_size)
@@ -106,31 +106,32 @@ def make_logger(air, sess, summary_writer, train_tensor, n_train_samples, test_t
         'rec_loss': air.rec_loss,
         'num_step_acc': air.num_step_accuracy,
         'num_step': air.num_step,
-        'opt_loss': air.opt_loss
+        'opt_loss': air.opt_loss,
+        'kl_div': air.kl_div.value
     }
 
-    try:
-        if air.supervised_nums:
-            exprs['nums_xe'] = air.nums_xe
-    except AttributeError: pass
+    additional_exprs = {
+        'nums_xe': 'nums_xe',
+        'kl_num_steps': 'kl_num_steps',
+        'kl_what': 'kl_what',
+        'kl_where': 'kl_where',
+        'baseline_loss': 'baseline_loss',
+        'reinforce_loss': 'reinforce_loss',
+        'l2_loss': 'l2_loss'
+    }
 
-    if air.use_prior:
-        exprs['prior_loss'] = air.prior_loss.value
-        if air.num_steps_prior is not None:
-            exprs['kl_num_steps'] = air.kl_num_steps
-
-        if air.what_prior is not None:
-            exprs['kl_what'] = air.kl_what
-            exprs['kl_where'] = air.kl_where
+    skipped = False
+    for k, v in additional_exprs.iteritems():
+        try:
+                exprs[k] = getattr(air, v)
+        except AttributeError:
+            if not skipped:
+                skipped = True
+                print 'make_logger: unable to log all expressions:'
+            print '\tSkipping {}'.format(k)
 
     if air.use_reinforce:
-        if air.baseline is not None:
-            exprs['baseline_loss'] = air.baseline_loss
-        exprs['reinforce_loss'] = air.reinforce_loss
         exprs['imp_weight'] = tf.reduce_mean(air.importance_weight)
-
-    if air.l2_weight > 0:
-        exprs['l2_loss'] = air.l2_loss
 
     train_log = make_expr_logger(sess, summary_writer, n_train_samples // air.batch_size, exprs, name='train')
 

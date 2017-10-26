@@ -44,9 +44,8 @@ class AIRCell(snt.RNNCore):
         with self._enter_variable_scope():
 
             self._spatial_transformer = SpatialTransformer(img_size, crop_size)
-            # self._inverse_transformer = SpatialTransformer(img_size, crop_size, inverse=True)
 
-            self._transform_estimator = transform_estimator(self._n_transform_param)
+            self._transform_estimator = transform_estimator()
             self._input_encoder = input_encoder()
             self._glimpse_encoder = glimpse_encoder()
 
@@ -132,14 +131,6 @@ class AIRCell(snt.RNNCore):
         what_distrib = self._what_distrib(what_params)
         what_loc, what_scale = what_distrib.loc, what_distrib.scale
         what_code = what_distrib.sample()
-
-        # decoded = self._glimpse_decoder(what_code)
-        # inversed = self._inverse_transformer(decoded, where_code)
-
-        # with tf.variable_scope('rnn_outputs'):
-            # inversed_flat = tf.reshape(inversed, (-1, self._n_pix))
-            # canvas_flat += presence * inversed_flat
-            # decoded_flat = tf.reshape(decoded, (-1, np.prod(self._crop_size)))
 
         output = [what_code, what_loc, what_scale, where_code, where_loc, where_scale,
                   presence_prob, presence]

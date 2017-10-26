@@ -29,7 +29,7 @@ def geometric_prior(success_prob, n_steps):
     geom = Geometric(probs=1. - success_prob)
     events = tf.range(n_steps + 1, dtype=geom.dtype)
     probs = geom.prob(events)
-    return probs
+    return probs, geom
 
 
 def _cumprod(tensor, axis=0):

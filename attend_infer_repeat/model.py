@@ -1,16 +1,33 @@
 import functools
-import numpy as np
 
 import tensorflow as tf
 from tensorflow.contrib.distributions import Normal
 from tensorflow.contrib.distributions.python.ops.kullback_leibler import kl as _kl
 
 
+import ops
 from cell import AIRCell
 from evaluation import gradient_summaries
-from ops import Loss, make_moving_average
 from prior import geometric_prior, NumStepsDistribution, tabular_kl
 from modules import AIRDecoder
+
+
+class AIRPriorMixin(object):
+
+    def _geom_success_prob(self, **kwargs):
+        return 1e-5
+
+    def _make_priors(self, **kwargs):
+        """Defines prior distributions
+
+        :return: prior over num steps, scale, shift and what
+        """
+
+        num_step_prior_prob, num_step_prior = geometric_prior(self._geom_success_prob(**kwargs), self.max_steps)
+        scale = Normal(.5, 1.)
+        shift = Normal(self.shift_posterior.loc, 1.)
+        what = Normal(0., 1.)
+        return num_step_prior_prob, num_step_prior, scale, shift, what
 
 
 class AIRModel(object):
@@ -20,7 +37,7 @@ class AIRModel(object):
                  n_what, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
                  steps_predictor,
                  output_std=1., discrete_steps=True, output_multiplier=1.,
-                 debug=False, **kwargs):
+                 debug=False, **cell_kwargs):
         """Creates the model.
 
         :param obs: tf.Tensor, images
@@ -37,15 +54,13 @@ class AIRModel(object):
         :param discrete_steps: see :class: AIRCell
         :param output_multiplier: float, a factor that multiplies the reconstructed glimpses
         :param debug: see :class: AIRCell
-        :param **kwargs: all other parameters are passed to AIRCell
+        :param **cell_kwargs: all other parameters are passed to AIRCell
         """
 
         self.obs = obs
         self.max_steps = max_steps
         self.glimpse_size = glimpse_size
-
         self.n_what = n_what
-
         self.output_std = output_std
         self.discrete_steps = discrete_steps
         self.debug = debug
@@ -57,10 +72,10 @@ class AIRModel(object):
             self.batch_size = shape[0]
             self.img_size = shape[1:]
             self._build(transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
-                        steps_predictor, kwargs)
+                        steps_predictor, cell_kwargs)
 
     def _build(self, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
-               steps_predictor, kwargs):
+               steps_predictor, cell_kwargs):
         """Build the model. See __init__ for argument description"""
 
         self.decoder = AIRDecoder(self.img_size, self.glimpse_size, glimpse_decoder)
@@ -68,7 +83,7 @@ class AIRModel(object):
                             input_encoder, glimpse_encoder, transform_estimator, steps_predictor,
                             discrete_steps=self.discrete_steps,
                             debug=self.debug,
-                            **kwargs)
+                            **cell_kwargs)
 
         initial_state = self.cell.initial_state(self.obs)
 
@@ -79,138 +94,90 @@ class AIRModel(object):
             output = tf.transpose(output, (1, 0, 2))
             setattr(self, name, output)
 
-        self.final_state = state[-2]
         self.canvas, self.glimpse = self.decoder(self.what, self.where, self.presence)
-        self.output_distrib = Normal(self.canvas, self.output_std)
 
-        posterior_step_probs = tf.squeeze(self.presence_prob)
-        self.num_steps_distrib = NumStepsDistribution(posterior_step_probs)
-
+        self.final_state = state[-2]
         self.num_step_per_sample = tf.to_float(tf.reduce_sum(tf.squeeze(self.presence), -1))
         self.num_step = tf.reduce_mean(self.num_step_per_sample)
 
-    @staticmethod
-    def _anneal_weight(init_val, final_val, anneal_type, global_step, anneal_steps, hold_for=0., steps_div=1.,
-                       dtype=tf.float64):
+        self.output_distrib, self.num_steps_posterior, self.scale_posterior, self.shift_posterior, self.what_posterior\
+            = self._make_posteriors()
 
-        val, final, step, hold_for, anneal_steps, steps_div = (tf.cast(i, dtype) for i in
-                                                               (init_val, final_val, global_step, hold_for, anneal_steps, steps_div))
-        step = tf.maximum(step - hold_for, 0.)
+        self.num_step_prior_prob, self.num_step_prior,\
+        self.scale_prior, self.shift_prior, self.what_prior = self._make_priors()
 
-        if anneal_type == 'exp':
-            decay_rate = tf.pow(final / val, steps_div / anneal_steps)
-            val = tf.train.exponential_decay(val, step, steps_div, decay_rate)
+    def _make_posteriors(self):
+        """Builds posterior distributions. This is fairly standard and shouldn't be changed.
 
-        elif anneal_type == 'linear':
-            val = final + (val - final) * (1. - step / anneal_steps)
-        else:
-            raise NotImplementedError
+        :return:
+        """
+        output_distrib = Normal(self.canvas, self.output_std)
 
-        anneal_weight = tf.maximum(final, val)
-        return anneal_weight
+        posterior_step_probs = tf.squeeze(self.presence_prob)
+        num_steps_posterior = NumStepsDistribution(posterior_step_probs)
 
-    def _prior_loss(self, what_prior, where_scale_prior, where_shift_prior,
-                    num_steps_prior, global_step):
+        ax = self.where_loc.shape.ndims - 1
+        us, ut = tf.split(self.where_loc, 2, ax)
+        ss, st = tf.split(self.where_scale, 2, ax)
+        scale_posterior = Normal(us, ss)
+        shift_posterior = Normal(ut, st)
+        what_posterior = Normal(self.what_loc, self.what_scale)
+
+        return output_distrib, num_steps_posterior, scale_posterior, shift_posterior, what_posterior
+
+    def _kl_divergence(self, analytic_kl_expectation):
         """Creates KL-divergence term of the loss"""
 
         with tf.variable_scope('KL_divergence'):
-            prior_loss = Loss()
-            if num_steps_prior is not None:
-                if num_steps_prior.anneal is not None:
-                    with tf.variable_scope('num_steps_prior'):
-                        nsp = num_steps_prior
+            kl_divergence = ops.Loss()
 
-                        hold_init = getattr(nsp, 'hold_init', 0.)
-                        steps_div = getattr(nsp, 'steps_div', 1.)
-                        steps_prior_success_prob = self._anneal_weight(nsp.init, nsp.final, nsp.anneal, global_step,
-                                                                    nsp.steps, hold_init, steps_div)
-                else:
-                    steps_prior_success_prob = num_steps_prior.init
-                self.steps_prior_success_prob = steps_prior_success_prob
+            with tf.variable_scope('num_steps'):
+                num_steps_posterior_prob = self.num_steps_posterior.prob()
+                steps_kl = tabular_kl(num_steps_posterior_prob, self.num_step_prior_prob)
+                self.kl_num_steps_per_sample = tf.squeeze(tf.reduce_sum(steps_kl, 1))
 
-                with tf.variable_scope('num_steps'):
-                    prior = geometric_prior(steps_prior_success_prob, self.max_steps)
-                    num_steps_posterior_prob = self.num_steps_distrib.prob()
-                    steps_kl = tabular_kl(num_steps_posterior_prob, prior)
-                    self.kl_num_steps_per_sample = tf.squeeze(tf.reduce_sum(steps_kl, 1))
+                self.kl_num_steps = tf.reduce_mean(self.kl_num_steps_per_sample)
+                tf.summary.scalar('kl_num_steps', self.kl_num_steps)
 
-                    self.kl_num_steps = tf.reduce_mean(self.kl_num_steps_per_sample)
-                    tf.summary.scalar('kl_num_steps', self.kl_num_steps)
+                kl_divergence.add(self.kl_num_steps, self.kl_num_steps_per_sample)
 
-                    weight = getattr(num_steps_prior, 'weight', 1.)
-                    prior_loss.add(self.kl_num_steps, self.kl_num_steps_per_sample, weight=weight)
-
-            if num_steps_prior.analytic:
+            if analytic_kl_expectation:
                 # reverse cumsum of q(n) needed to compute \E_{q(n)} [ KL[ q(z|n) || p(z|n) ]]
-                step_weight = num_steps_posterior_prob[..., 1:]
-                step_weight = tf.cumsum(step_weight, axis=-1, reverse=True)
+                ordered_step_prob = num_steps_posterior_prob[..., 1:]
+                ordered_step_prob = tf.cumsum(ordered_step_prob, axis=-1, reverse=True)
             else:
-                step_weight = tf.squeeze(self.presence)
+                ordered_step_prob = tf.squeeze(self.presence)
 
-            self.prior_step_weight = step_weight
+            self.ordered_step_prob = ordered_step_prob
+            with tf.variable_scope('what'):
+                what_kl = _kl(self.what_posterior, self.what_prior)
+                what_kl = tf.reduce_sum(what_kl, -1) * self.ordered_step_prob
+                what_kl_per_sample = tf.reduce_sum(what_kl, -1)
+                self.kl_what = tf.reduce_mean(what_kl_per_sample)
+                tf.summary.scalar('kl_what', self.kl_what)
+                kl_divergence.add(self.kl_what, what_kl_per_sample)
 
+            with tf.variable_scope('where'):
+                scale_kl = _kl(self.scale_posterior, self.scale_prior)
+                shift_kl = _kl(self.shift_posterior, self.shift_prior)
+                where_kl = tf.reduce_sum(scale_kl + shift_kl, -1) * self.ordered_step_prob
+                where_kl_per_sample = tf.reduce_sum(where_kl, -1)
+                self.kl_where = tf.reduce_mean(where_kl_per_sample)
+                tf.summary.scalar('kl_where', self.kl_where)
+                kl_divergence.add(self.kl_where, where_kl_per_sample)
 
-            # # this prevents optimising the expectation with respect to q(n)
-            # # it's similar to the maximisation step of EM: we have a pre-computed expectation
-            # # from the E step, and now we're maximising with respect to the argument of the expectation.
-            # self.prior_step_weight = tf.stop_gradient(self.prior_step_weight)
-
-            conditional_kl_weight = 1.
-            if what_prior is not None:
-                with tf.variable_scope('what'):
-
-                    prior = Normal(what_prior.loc, what_prior.scale)
-                    posterior = Normal(self.what_loc, self.what_scale)
-
-                    what_kl = _kl(posterior, prior)
-                    what_kl = tf.reduce_sum(what_kl, -1) * self.prior_step_weight
-                    what_kl_per_sample = tf.reduce_sum(what_kl, -1)
-                    self.kl_what = tf.reduce_mean(what_kl_per_sample)
-                    tf.summary.scalar('kl_what', self.kl_what)
-                    prior_loss.add(self.kl_what, what_kl_per_sample, weight=conditional_kl_weight)
-
-            if where_scale_prior is not None and where_shift_prior is not None:
-                with tf.variable_scope('where'):
-                    usx, utx, usy, uty = tf.split(self.where_loc, 4, 2)
-                    ssx, stx, ssy, sty = tf.split(self.where_scale, 4, 2)
-                    us = tf.concat((usx, usy), -1)
-                    ss = tf.concat((ssx, ssy), -1)
-
-                    scale_distrib = Normal(us, ss)
-                    scale_prior = Normal(where_scale_prior.loc, where_scale_prior.scale)
-                    scale_kl = _kl(scale_distrib, scale_prior)
-
-                    ut = tf.concat((utx, uty), -1)
-                    st = tf.concat((stx, sty), -1)
-                    shift_distrib = Normal(ut, st)
-
-                    if 'loc' in where_shift_prior:
-                        shift_mean = where_shift_prior.loc
-                    else:
-                        shift_mean = ut
-                    shift_prior = Normal(shift_mean, where_shift_prior.scale)
-
-                    shift_kl = _kl(shift_distrib, shift_prior)
-                    where_kl = tf.reduce_sum(scale_kl + shift_kl, -1) * self.prior_step_weight
-                    where_kl_per_sample = tf.reduce_sum(where_kl, -1)
-                    self.kl_where = tf.reduce_mean(where_kl_per_sample)
-                    tf.summary.scalar('kl_where', self.kl_where)
-                    prior_loss.add(self.kl_where, where_kl_per_sample, weight=conditional_kl_weight)
-
-        return prior_loss
+        return kl_divergence
 
     def _reinforce(self, importance_weight, decay_rate):
         """Implements REINFORCE for training the discrete probability distribution over number of steps and train-step
          for the baseline"""
 
-        log_prob = self.num_steps_distrib.log_prob(self.num_step_per_sample)
+        log_prob = self.num_steps_posterior.log_prob(self.num_step_per_sample)
 
         if self.baseline is not None:
             if not isinstance(self.baseline, tf.Tensor):
                 self.baseline_module = self.baseline
-                # wt, we, p = (tf.transpose(i, (1, 0, 2)) for i in ((self.what_loc, self.where_loc, self.presence_prob)))
-                wt, we, p = (i for i in ((self.what_loc, self.where_loc, self.presence_prob)))
-                self.baseline = self.baseline_module(self.obs, wt, we, p, self.final_state)
+                self.baseline = self.baseline_module(self.obs, self.what_loc, self.where_loc, self.presence_prob, self.final_state)
                 self.baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                                        scope=self.baseline_module.variable_scope.name)
             importance_weight -= self.baseline
@@ -218,8 +185,8 @@ class AIRModel(object):
         if decay_rate is not None:
             axes = range(len(importance_weight.get_shape()))
             mean, var = tf.nn.moments(tf.squeeze(importance_weight), axes=axes)
-            self.imp_weight_moving_mean = make_moving_average('imp_weight_moving_mean', mean, 0., decay_rate)
-            self.imp_weight_moving_var = make_moving_average('imp_weight_moving_var', var, 1., decay_rate)
+            self.imp_weight_moving_mean = ops.make_moving_average('imp_weight_moving_mean', mean, 0., decay_rate)
+            self.imp_weight_moving_var = ops.make_moving_average('imp_weight_moving_var', var, 1., decay_rate)
 
             factor = tf.maximum(tf.sqrt(self.imp_weight_moving_var), 1.)
             importance_weight = (importance_weight - self.imp_weight_moving_mean) / factor
@@ -243,33 +210,14 @@ class AIRModel(object):
         train_step = opt.minimize(self.baseline_loss, var_list=baseline_vars)
         return train_step
 
-    def train_step(self, learning_rate, l2_weight=0., what_prior=None, where_scale_prior=None,
-                   where_shift_prior=None,
-                   num_steps_prior=None, use_prior=True,
+    def train_step(self, learning_rate, l2_weight=0., analytic_kl_expectation=False,
                    use_reinforce=True, baseline=None, decay_rate=None, nums=None,
                    optimizer=tf.train.RMSPropOptimizer, opt_kwargs=dict(momentum=.9, centered=True)):
         """Creates the train step and the global_step
 
         :param learning_rate: float or tf.Tensor
         :param l2_weight: float or tf.Tensor, if > 0. then adds l2 regularisation to the model
-        :param what_prior: AttrDict or similar, with `loc` and `scale`, both floats
-        :param where_scale_prior: AttrDict or similar, with `loc` and `scale`, both floats
-        :param where_shift_prior: AttrDict or similar, with `loc` and `scale`, both floats
-        :param num_steps_prior: AttrDict or similar, described as an example:
-
-            >>> num_steps_prior = AttrDict(
-            >>> anneal='exp',   # type of annealing of the prior; can be 'exp', 'linear' or None
-            >>> init=1. - 1e-7, # initial value of the prior
-            >>> final=1e-5,     # final value of the prior
-            >>> steps_div=1e4,  # relevant for exponential annealing, see :func: tf.exponential_decay
-            >>> steps=1e5,      # number of steps for annealing
-            >>> analytic=True
-            >>> )
-
-        `init` and `final` describe success probability values in a geometric distribution; for example `init=.9` means
-        that the probability of taking a single step is .9, two steps is .9**2 etc.
-
-        :param use_prior: boolean, if False sets the KL-divergence loss term to 0
+        :param analytic_kl_expectation: bool, computes expectation over conditional-KL analytically if True
         :param use_reinforce: boolean, if False doesn't compute gradients for the number of steps
         :param baseline: callable or None, baseline for variance reduction of REINFORCE
         :param decay_rate: float, decay rate to use for exp-moving average for NVIL
@@ -277,27 +225,13 @@ class AIRModel(object):
         :return: train step and global step
         """
 
-        num_steps_prior['analytic'] = getattr(num_steps_prior, 'analytic', True)
-
         self.l2_weight = l2_weight
-        self.what_prior = what_prior
-        self.where_scale_prior = where_scale_prior
-        self.where_shift_prior = where_shift_prior
-        self.num_steps_prior = num_steps_prior
-
         if not hasattr(self, 'baseline'):
             self.baseline = baseline
 
-        self.use_prior = use_prior
-        if self.use_prior is not None:
-            self.use_prior = tf.Variable(self.use_prior, trainable=False, name='use_prior')
-            self.toggle_prior = self.use_prior.assign(tf.logical_not(self.use_prior))
-
         self.use_reinforce = use_reinforce and self.discrete_steps
-
         with tf.variable_scope('loss'):
-            global_step = tf.train.get_or_create_global_step()
-            loss = Loss()
+            loss = ops.Loss()
             self._train_step = []
             self.learning_rate = tf.Variable(learning_rate, name='learning_rate', trainable=False)
             make_opt = functools.partial(optimizer, **opt_kwargs)
@@ -310,20 +244,17 @@ class AIRModel(object):
             loss.add(self.rec_loss, self.rec_loss_per_sample)
 
             # Prior Loss, KL[ q(z, n | x) || p(z, n) ]
-            if use_prior is not None:
-                self.prior_loss = self._prior_loss(what_prior, where_scale_prior,
-                                                   where_shift_prior, num_steps_prior, global_step)
-                tf.summary.scalar('prior', self.prior_loss.value)
-                self.prior_weight = tf.to_float(tf.equal(self.use_prior, True))
-                loss.add(self.prior_loss, weight=self.prior_weight)
+            self.kl_div = self._kl_divergence(analytic_kl_expectation)
+            tf.summary.scalar('prior', self.kl_div.value)
+            loss.add(self.kl_div)
 
             # REINFORCE
             opt_loss = loss.value
             if use_reinforce:
 
                 self.reinforce_imp_weight = self.rec_loss_per_sample
-                if not num_steps_prior.analytic:
-                    self.reinforce_imp_weight += self.prior_loss.per_sample
+                if not analytic_kl_expectation:
+                    self.reinforce_imp_weight += self.kl_div.per_sample
 
                 reinforce_loss = self._reinforce(self.reinforce_imp_weight, decay_rate)
                 opt_loss += reinforce_loss
@@ -342,6 +273,7 @@ class AIRModel(object):
             gvs = opt.compute_gradients(opt_loss, var_list=model_vars)
 
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+            global_step = tf.train.get_or_create_global_step()
             with tf.control_dependencies(update_ops):
                 self._train_step = opt.apply_gradients(gvs, global_step=global_step)
 

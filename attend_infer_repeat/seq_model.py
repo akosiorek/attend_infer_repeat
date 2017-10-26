@@ -478,7 +478,7 @@ class SeqAIRModel(object):
             # # this prevents optimising the expectation with respect to q(n)
             # # it's similar to the maximisation step of EM: we have a pre-computed expectation
             # # from the E step, and now we're maximising with respect to the argument of the expectation.
-            # self.prior_step_weight = tf.stop_gradient(self.prior_step_weight)
+            # self.ordered_step_prob = tf.stop_gradient(self.ordered_step_prob)
 
             conditional_kl_weight = 1.
             if what_prior is not None:
