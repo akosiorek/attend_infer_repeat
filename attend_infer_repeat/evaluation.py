@@ -28,7 +28,7 @@ def rect_stn(ax, width, height, stn_params, c=None, line_width=3):
     rect(bbox, c, ax=ax, line_width=line_width)
 
 
-def make_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=10):
+def make_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=10, dpi=300):
     n_steps = air.max_steps
 
     xx, pred_canvas, pred_crop, prob, pres, w = sess.run(
@@ -58,17 +58,17 @@ def make_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=10):
                          fontsize=4 * scale)
             ax_row[0].set_ylabel('glimpse #{}'.format(i + 1))
 
-            for ax in axes.flatten():
-                ax.xaxis.set_ticks([])
-            ax.yaxis.set_ticks([])
+    for ax in axes.flatten():
+        ax.xaxis.set_ticks([])
+        ax.yaxis.set_ticks([])
 
-            axes[0, 0].set_ylabel('ground-truth')
-            axes[1, 0].set_ylabel('reconstruction')
+    axes[0, 0].set_ylabel('ground-truth')
+    axes[1, 0].set_ylabel('reconstruction')
 
-            if checkpoint_dir is not None:
-                fig_name = osp.join(checkpoint_dir, 'progress_fig_{}.png'.format(global_step))
-            fig.savefig(fig_name, dpi=300)
-            plt.close('all')
+    if checkpoint_dir is not None:
+        fig_name = osp.join(checkpoint_dir, 'progress_fig_{}.png'.format(global_step))
+        fig.savefig(fig_name, dpi=dpi)
+        plt.close(fig)
 
 
 def make_seq_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=5, p_threshold=.5):
