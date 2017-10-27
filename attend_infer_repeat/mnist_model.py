@@ -3,13 +3,14 @@ from functools import partial
 import tensorflow as tf
 import sonnet as snt
 
-from model import AIRModel, AIRPriorMixin
+from model import AIRModel
+from elbo import AIRPriorMixin, KLMixin, LogLikelihoodMixin
 from seq_model import SeqAIRModel
 from modules import BaselineMLP, Encoder, Decoder, StochasticTransformParam, StepsPredictor
 from ops import anneal_weight
 
 
-class MNISTPriorMixin(AIRPriorMixin):
+class MNISTPriorMixin(AIRPriorMixin, KLMixin, LogLikelihoodMixin):
 
     def _geom_success_prob(self, **kwargs):
 

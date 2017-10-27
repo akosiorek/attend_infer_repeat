@@ -4,11 +4,12 @@ import sonnet as snt
 
 from attrdict import AttrDict
 
-from attend_infer_repeat.model import AIRModel, AIRPriorMixin
+from attend_infer_repeat.model import AIRModel
+from attend_infer_repeat.elbo import AIRPriorMixin, KLMixin, LogLikelihoodMixin
 from attend_infer_repeat.modules import *
 
 
-class AIRModelWithPriors(AIRModel, AIRPriorMixin): pass
+class AIRModelWithPriors(AIRModel, AIRPriorMixin, KLMixin, LogLikelihoodMixin): pass
 
 
 def make_modules():
