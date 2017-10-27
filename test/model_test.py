@@ -6,10 +6,11 @@ from attrdict import AttrDict
 
 from attend_infer_repeat.model import AIRModel
 from attend_infer_repeat.elbo import AIRPriorMixin, KLMixin, LogLikelihoodMixin
+from attend_infer_repeat.grad import NVILEstimator
 from attend_infer_repeat.modules import *
 
 
-class AIRModelWithPriors(AIRModel, AIRPriorMixin, KLMixin, LogLikelihoodMixin): pass
+class AIRModelWithPriors(AIRModel, AIRPriorMixin, KLMixin, LogLikelihoodMixin, NVILEstimator): pass
 
 
 def make_modules():
@@ -43,7 +44,7 @@ class ModelTest(unittest.TestCase):
         print 'Constructed model'
 
         train_step = air.train_step(learning_rate, 1e-4, nums=nums)
-        loss = air.loss.value
+        loss = air.nelbo
         print 'Computed gradients'
 
         sess = tf.Session()

@@ -68,6 +68,8 @@ class AIRModel(object):
     def _build(self, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
                steps_predictor, cell_kwargs):
         """Build the model. See __init__ for argument description"""
+        # save existing variables to know later what we've created
+        previous_vars = tf.trainable_variables()
 
         self.decoder = AIRDecoder(self.img_size, self.glimpse_size, glimpse_decoder)
         self.cell = AIRCell(self.img_size, self.glimpse_size, self.n_what, transition,
@@ -98,6 +100,13 @@ class AIRModel(object):
         self.num_step_prior_prob, self.num_step_prior,\
         self.scale_prior, self.shift_prior, self.what_prior = self._make_priors()
 
+        # group variables
+        model_vars = set(tf.trainable_variables()) - set(previous_vars)
+        self.decoder_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                         scope=self.decoder.variable_scope.name)
+        self.encoder_vars = list(model_vars - set(self.decoder_vars))
+        self.model_vars = list(model_vars)
+
     def _make_posteriors(self):
         """Builds posterior distributions. This is fairly standard and shouldn't be changed.
 
@@ -117,8 +126,7 @@ class AIRModel(object):
 
         return output_distrib, num_steps_posterior, scale_posterior, shift_posterior, what_posterior
 
-    def train_step(self, learning_rate, l2_weight=0.,
-                   use_reinforce=True, baseline=None, decay_rate=None, nums=None,
+    def train_step(self, learning_rate, l2_weight=0., nums=None,
                    optimizer=tf.train.RMSPropOptimizer, opt_kwargs=dict(momentum=.9, centered=True)):
         """Creates the train step and the global_step
 
@@ -132,71 +140,44 @@ class AIRModel(object):
         """
 
         self.l2_weight = l2_weight
-        if not hasattr(self, 'baseline'):
-            self.baseline = baseline
 
-        self.use_reinforce = use_reinforce and self.discrete_steps
         with tf.variable_scope('loss'):
-            loss = ops.Loss()
-            self._train_step = []
             self.learning_rate = tf.Variable(learning_rate, name='learning_rate', trainable=False)
             make_opt = functools.partial(optimizer, **opt_kwargs)
 
             # Reconstruction Loss, - \E_q [ p(x | z, n) ]
-            self.rec_loss, self.rec_loss_per_sample = self._log_likelihood()
-            tf.summary.scalar('rec', self.rec_loss)
-            loss.add(self.rec_loss, self.rec_loss_per_sample)
+            self.rec_loss = ops.Loss()
+            rec_loss, rec_loss_per_sample = self._log_likelihood()
+            tf.summary.scalar('rec', rec_loss)
+            self.rec_loss.add(rec_loss, rec_loss_per_sample)
 
             # Prior Loss, KL[ q(z, n | x) || p(z, n) ]
             self.kl_div = self._kl_divergence()
             tf.summary.scalar('prior', self.kl_div.value)
-            loss.add(self.kl_div)
 
-            # REINFORCE
-            opt_loss = loss.value
-            if use_reinforce:
-
-                self.reinforce_imp_weight = self.rec_loss_per_sample
-                if not self.analytic_kl_expectation:
-                    self.reinforce_imp_weight += self.kl_div.per_sample
-
-                reinforce_loss = self._reinforce(self.reinforce_imp_weight, decay_rate)
-                opt_loss += reinforce_loss
-
-            baseline_vars = getattr(self, 'baseline_vars', [])
-            model_vars = list(set(tf.trainable_variables()) - set(baseline_vars))
-            # L2 reg
-            if l2_weight > 0.:
-                # don't penalise biases
-                weights = [w for w in model_vars if len(w.get_shape()) == 2]
-                self.l2_loss = l2_weight * sum(map(tf.nn.l2_loss, weights))
-                opt_loss += self.l2_loss
-                tf.summary.scalar('l2', self.l2_loss)
-
-            opt = make_opt(self.learning_rate)
-            gvs = opt.compute_gradients(opt_loss, var_list=model_vars)
-
-            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-            global_step = tf.train.get_or_create_global_step()
-            with tf.control_dependencies(update_ops):
-                self._train_step = opt.apply_gradients(gvs, global_step=global_step)
-
-            if self.use_reinforce and self.baseline is not None:
-                baseline_opt = make_opt(10 * learning_rate)
-                self._baseline_tran_step = self._make_baseline_train_step(baseline_opt, self.reinforce_imp_weight,
-                                                                          self.baseline, self.baseline_vars)
-                self._true_train_step = self._train_step
-                self._train_step = tf.group(self._true_train_step, self._baseline_tran_step)
+        with tf.variable_scope('grad'):
+            self._train_step, self.gvs = self._make_train_step(make_opt, self.rec_loss, self.kl_div)
 
         # Metrics
-        gradient_summaries(gvs)
+        gradient_summaries(self.gvs)
         if nums is not None:
             self.gt_num_steps = tf.squeeze(tf.reduce_sum(nums, 0))
             self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.gt_num_steps, self.num_step_per_sample)))
 
-        self.loss = loss
-        self.opt_loss = opt_loss
-        return self._train_step, global_step
+        # negative ELBO
+        self.nelbo = self.rec_loss.value + self.kl_div.value
+        return self._train_step, tf.train.get_or_create_global_step()
+
+    def _l2_loss(self):
+
+        l2_loss = 0.
+        # L2 reg
+        if self.l2_weight > 0.:
+            # don't penalise biases
+            weights = [w for w in self.model_vars if len(w.get_shape()) == 2]
+            l2_loss = self.l2_weight * sum(map(tf.nn.l2_loss, weights))
+            tf.summary.scalar('l2', l2_loss)
+        return l2_loss
 
     def _kl_divergence(self):
         """Creates KL-divergence term of the loss"""
@@ -222,61 +203,3 @@ class AIRModel(object):
                 kl_divergence.add(self.kl_where, self.kl_where_per_sample)
 
         return kl_divergence
-
-    def _reinforce(self, importance_weight, decay_rate):
-        """Implements REINFORCE for training the discrete probability distribution over number of steps and train-step
-         for the baseline"""
-
-        log_prob = self.num_steps_posterior.log_prob(self.num_step_per_sample)
-
-        if self.baseline is not None:
-            if not isinstance(self.baseline, tf.Tensor):
-                self.baseline_module = self.baseline
-                self.baseline = self.baseline_module(self.obs, self.what_loc, self.where_loc, self.presence_prob, self.final_state)
-                self.baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
-                                                       scope=self.baseline_module.variable_scope.name)
-            importance_weight -= self.baseline
-
-        if decay_rate is not None:
-            axes = range(len(importance_weight.get_shape()))
-            mean, var = tf.nn.moments(tf.squeeze(importance_weight), axes=axes)
-            self.imp_weight_moving_mean = ops.make_moving_average('imp_weight_moving_mean', mean, 0., decay_rate)
-            self.imp_weight_moving_var = ops.make_moving_average('imp_weight_moving_var', var, 1., decay_rate)
-
-            factor = tf.maximum(tf.sqrt(self.imp_weight_moving_var), 1.)
-            importance_weight = (importance_weight - self.imp_weight_moving_mean) / factor
-
-        self.importance_weight = importance_weight
-        axes = range(len(self.importance_weight.get_shape()))
-        imp_weight_mean, imp_weight_var = tf.nn.moments(self.importance_weight, axes)
-        tf.summary.scalar('imp_weight_mean', imp_weight_mean)
-        tf.summary.scalar('imp_weight_var', imp_weight_var)
-        reinforce_loss_per_sample = tf.stop_gradient(self.importance_weight) * log_prob
-        self.reinforce_loss = tf.reduce_mean(reinforce_loss_per_sample)
-        tf.summary.scalar('reinforce_loss', self.reinforce_loss)
-
-        return self.reinforce_loss
-
-    def _make_baseline_train_step(self, opt, loss, baseline, baseline_vars):
-        baseline_target = tf.stop_gradient(loss)
-
-        self.baseline_loss = .5 * tf.reduce_mean(tf.square(baseline_target - baseline))
-        tf.summary.scalar('baseline_loss', self.baseline_loss)
-        train_step = opt.minimize(self.baseline_loss, var_list=baseline_vars)
-        return train_step
-
-# Gradient estimation:
-#     1) Forward pass => build
-#     2) Sample => build
-#     3) compute log likelihood
-#     4) compute KL
-#     5) use likelihood and KL to estimate gradients
-
-
-
-
-
-class NVILEstimator(object):
-
-    def grads(self):
-        pass

@@ -5,9 +5,20 @@ import sonnet as snt
 
 from model import AIRModel
 from elbo import AIRPriorMixin, KLMixin, LogLikelihoodMixin
+from grad import NVILEstimator
 from seq_model import SeqAIRModel
 from modules import BaselineMLP, Encoder, Decoder, StochasticTransformParam, StepsPredictor
 from ops import anneal_weight
+
+
+class NVILEstimatorWithBaseline(NVILEstimator):
+
+    def _make_baseline(self):
+        baseline_module = BaselineMLP(self.baseline_hidden)
+        baseline = baseline_module(self.obs, self.what_loc, self.where_loc, self.presence_prob, self.final_state)
+        baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
+                                          scope=baseline_module.variable_scope.name)
+        return baseline, baseline_vars
 
 
 class MNISTPriorMixin(AIRPriorMixin, KLMixin, LogLikelihoodMixin):
@@ -24,7 +35,7 @@ class MNISTPriorMixin(AIRPriorMixin, KLMixin, LogLikelihoodMixin):
         return self.steps_prior_success_prob
 
 
-class AIRonMNIST(AIRModel, MNISTPriorMixin):
+class AIRonMNIST(AIRModel, MNISTPriorMixin, KLMixin, LogLikelihoodMixin, NVILEstimatorWithBaseline):
     """Implements AIR for the MNIST dataset"""
 
     def __init__(self, obs, glimpse_size=(20, 20),
@@ -41,7 +52,7 @@ class AIRonMNIST(AIRModel, MNISTPriorMixin):
         self.transform_var_bias = tf.Variable(transform_var_bias, trainable=False, dtype=tf.float32,
                                                        name='transform_var_bias')
         self.step_bias = tf.Variable(step_bias, trainable=False, dtype=tf.float32, name='step_bias')
-        self.baseline = BaselineMLP(baseline_hidden)
+        self.baseline_hidden = baseline_hidden
 
         super(AIRonMNIST, self).__init__(
             *args,

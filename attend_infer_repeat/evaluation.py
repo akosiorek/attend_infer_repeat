@@ -102,11 +102,10 @@ def make_seq_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=5, 
 
 def make_logger(air, sess, summary_writer, train_tensor, n_train_samples, test_tensor, n_test_samples):
     exprs = {
-        'loss': air.loss.value,
-        'rec_loss': air.rec_loss,
+        'nelbo': air.nelbo,
+        'rec_loss': air.rec_loss.value,
         'num_step_acc': air.num_step_accuracy,
         'num_step': air.num_step,
-        'opt_loss': air.opt_loss,
         'kl_div': air.kl_div.value
     }
 
@@ -117,7 +116,9 @@ def make_logger(air, sess, summary_writer, train_tensor, n_train_samples, test_t
         'kl_where': 'kl_where',
         'baseline_loss': 'baseline_loss',
         'reinforce_loss': 'reinforce_loss',
-        'l2_loss': 'l2_loss'
+        'l2_loss': 'l2_loss',
+        'proxy_loss': 'proxy_loss',
+        # 'imp_weight': 'importance_weight'
     }
 
     skipped = False
@@ -129,9 +130,6 @@ def make_logger(air, sess, summary_writer, train_tensor, n_train_samples, test_t
                 skipped = True
                 print 'make_logger: unable to log all expressions:'
             print '\tSkipping {}'.format(k)
-
-    if air.use_reinforce:
-        exprs['imp_weight'] = tf.reduce_mean(air.importance_weight)
 
     train_log = make_expr_logger(sess, summary_writer, n_train_samples // air.batch_size, exprs, name='train')
 
