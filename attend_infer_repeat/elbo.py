@@ -23,14 +23,7 @@ class AIRPriorMixin(object):
         return num_step_prior_prob, num_step_prior, scale, shift, what
 
 
-class KLMixin(object):
-
-    def _kl_num_steps(self):
-        num_steps_posterior_prob = self.num_steps_posterior.prob()
-        steps_kl = tabular_kl(num_steps_posterior_prob, self.num_step_prior_prob)
-        kl_num_steps_per_sample = tf.squeeze(tf.reduce_sum(steps_kl, 1))
-        kl_num_steps = tf.reduce_mean(kl_num_steps_per_sample)
-        return kl_num_steps, kl_num_steps_per_sample
+class KLZMixin(object):
 
     def _ordered_step_prob(self):
         if self.analytic_kl_expectation:
@@ -57,11 +50,34 @@ class KLMixin(object):
         return kl_where, where_kl_per_sample
 
 
+class KLNumStepsMixin(object):
+    def _kl_num_steps(self):
+        num_steps_posterior_prob = self.num_steps_posterior.prob()
+        steps_kl = tabular_kl(num_steps_posterior_prob, self.num_step_prior_prob)
+        kl_num_steps_per_sample = tf.squeeze(tf.reduce_sum(steps_kl, 1))
+        kl_num_steps = tf.reduce_mean(kl_num_steps_per_sample)
+        return kl_num_steps, kl_num_steps_per_sample
+
+
+class KLNumStepsNoGradMixin(KLNumStepsMixin):
+    def _kl_num_steps(self):
+        kls = super(KLNumStepsNoGradMixin, self)._kl_num_steps()
+        return (tf.stop_gradient(kl) for kl in kls)
+
+
+class KLMixin(KLZMixin, KLNumStepsMixin):
+    pass
+
+
+class KLNoStepsGradMixin(KLZMixin, KLNumStepsNoGradMixin):
+    pass
+
+
 class LogLikelihoodMixin(object):
 
     def _log_likelihood(self):
         # Reconstruction Loss, - \E_q [ p(x | z, n) ]
-        rec_loss_per_sample = -self.output_distrib.log_prob(self.obs)
+        rec_loss_per_sample = -self.output_distrib.log_prob(self.used_obs)
         rec_loss_per_sample = tf.reduce_sum(rec_loss_per_sample, axis=(1, 2))
         rec_loss = tf.reduce_mean(rec_loss_per_sample)
         return rec_loss, rec_loss_per_sample

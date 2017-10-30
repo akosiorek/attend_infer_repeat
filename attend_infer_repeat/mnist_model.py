@@ -4,24 +4,32 @@ import tensorflow as tf
 import sonnet as snt
 
 from model import AIRModel
-from elbo import AIRPriorMixin, KLMixin, LogLikelihoodMixin
-from grad import NVILEstimator
+from elbo import AIRPriorMixin, KLMixin, KLNoStepsGradMixin, LogLikelihoodMixin
+from grad import NVILEstimator, ImportanceWeightedNVILEstimator
 from seq_model import SeqAIRModel
 from modules import BaselineMLP, Encoder, Decoder, StochasticTransformParam, StepsPredictor
 from ops import anneal_weight
 
 
-class NVILEstimatorWithBaseline(NVILEstimator):
+class BaselineMixin(object):
 
     def _make_baseline(self):
         baseline_module = BaselineMLP(self.baseline_hidden)
-        baseline = baseline_module(self.obs, self.what_loc, self.where_loc, self.presence_prob, self.final_state)
+        baseline = baseline_module(self.used_obs, self.what_loc, self.where_loc, self.presence_prob, self.final_state)
         baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                           scope=baseline_module.variable_scope.name)
         return baseline, baseline_vars
 
 
-class MNISTPriorMixin(AIRPriorMixin, KLMixin, LogLikelihoodMixin):
+class NVILEstimatorWithBaseline(NVILEstimator, BaselineMixin):
+    pass
+
+
+class ImportanceWeightedNVILEstimatorWithBaseline(ImportanceWeightedNVILEstimator, BaselineMixin):
+    pass
+
+
+class MNISTPriorMixin(AIRPriorMixin, LogLikelihoodMixin):
 
     def _geom_success_prob(self, **kwargs):
 
@@ -35,7 +43,7 @@ class MNISTPriorMixin(AIRPriorMixin, KLMixin, LogLikelihoodMixin):
         return self.steps_prior_success_prob
 
 
-class AIRonMNIST(AIRModel, MNISTPriorMixin, KLMixin, LogLikelihoodMixin, NVILEstimatorWithBaseline):
+class AIRonMNIST(AIRModel, MNISTPriorMixin, KLMixin, LogLikelihoodMixin):
     """Implements AIR for the MNIST dataset"""
 
     def __init__(self, obs, glimpse_size=(20, 20),

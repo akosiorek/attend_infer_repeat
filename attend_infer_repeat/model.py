@@ -27,7 +27,7 @@ class AIRModel(object):
     def __init__(self, obs, max_steps, glimpse_size,
                  n_what, transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
                  steps_predictor,
-                 output_std=1., discrete_steps=True, output_multiplier=1.,
+                 output_std=1., discrete_steps=True, output_multiplier=1., iw_samples=1,
                  debug=False, **cell_kwargs):
         """Creates the model.
 
@@ -49,18 +49,26 @@ class AIRModel(object):
         """
 
         self.obs = obs
+
         self.max_steps = max_steps
         self.glimpse_size = glimpse_size
         self.n_what = n_what
         self.output_std = output_std
         self.discrete_steps = discrete_steps
+        self.iw_samples = iw_samples
         self.debug = debug
+
+        print 'iw_samples', iw_samples
+
+        tiles = [iw_samples] + [1] * (obs.shape.ndims - 1)
+        self.used_obs = tf.tile(self.obs, tiles)
 
         with tf.variable_scope(self.__class__.__name__):
             self.output_multiplier = tf.Variable(output_multiplier, dtype=tf.float32, trainable=False, name='canvas_multiplier')
 
             shape = self.obs.get_shape().as_list()
             self.batch_size = shape[0]
+            self.effective_batch_size = self.batch_size * self.iw_samples
             self.img_size = shape[1:]
             self._build(transition, input_encoder, glimpse_encoder, glimpse_decoder, transform_estimator,
                         steps_predictor, cell_kwargs)
@@ -78,9 +86,9 @@ class AIRModel(object):
                             debug=self.debug,
                             **cell_kwargs)
 
-        initial_state = self.cell.initial_state(self.obs)
+        initial_state = self.cell.initial_state(self.used_obs)
 
-        dummy_sequence = tf.zeros((self.max_steps, self.batch_size, 1), name='dummy_sequence')
+        dummy_sequence = tf.zeros((self.max_steps, self.effective_batch_size, 1), name='dummy_sequence')
         outputs, state = tf.nn.dynamic_rnn(self.cell, dummy_sequence, initial_state=initial_state, time_major=True)
 
         for name, output in zip(self.cell.output_names, outputs):
@@ -162,11 +170,18 @@ class AIRModel(object):
         gradient_summaries(self.gvs)
         if nums is not None:
             self.gt_num_steps = tf.squeeze(tf.reduce_sum(nums, 0))
-            self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.gt_num_steps, self.num_step_per_sample)))
+            self.effective__gt_num_steps = tf.tile(self.gt_num_steps, [self.iw_samples] + [1] * (self.gt_num_steps.shape.ndims - 1))
+            self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.effective__gt_num_steps, self.num_step_per_sample)))
 
         # negative ELBO
-        self.nelbo = self.rec_loss.value + self.kl_div.value
+        self.nelbo = self.make_nelbo()
         return self._train_step, tf.train.get_or_create_global_step()
+
+    def make_nelbo(self):
+        try:
+            return self._make_nelbo()
+        except AttributeError:
+            return self.rec_loss.value + self.kl_div.value
 
     def _l2_loss(self):
 
