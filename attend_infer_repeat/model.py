@@ -170,8 +170,8 @@ class AIRModel(object):
         gradient_summaries(self.gvs)
         if nums is not None:
             self.gt_num_steps = tf.squeeze(tf.reduce_sum(nums, 0))
-            self.effective__gt_num_steps = tf.tile(self.gt_num_steps, [self.iw_samples] + [1] * (self.gt_num_steps.shape.ndims - 1))
-            self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.effective__gt_num_steps, self.num_step_per_sample)))
+            self.effective_gt_num_steps = tf.tile(self.gt_num_steps, [self.iw_samples] + [1] * (self.gt_num_steps.shape.ndims - 1))
+            self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.effective_gt_num_steps, self.num_step_per_sample)))
 
         # negative ELBO
         self.nelbo = self.make_nelbo()

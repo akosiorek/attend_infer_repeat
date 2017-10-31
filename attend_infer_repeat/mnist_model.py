@@ -4,7 +4,7 @@ import tensorflow as tf
 import sonnet as snt
 
 from model import AIRModel
-from elbo import AIRPriorMixin, KLMixin, KLNoStepsGradMixin, LogLikelihoodMixin
+from elbo import *
 from grad import NVILEstimator, ImportanceWeightedNVILEstimator
 from seq_model import SeqAIRModel
 from modules import BaselineMLP, Encoder, Decoder, StochasticTransformParam, StepsPredictor
@@ -15,9 +15,16 @@ class BaselineMixin(object):
 
     def _make_baseline(self):
         baseline_module = BaselineMLP(self.baseline_hidden)
-        baseline = baseline_module(self.used_obs, self.what_loc, self.where_loc, self.presence_prob, self.final_state)
+        final_state = [i[::self.iw_samples] for i in self.final_state]
+        inpts = [self.obs, self.what_loc, self.where_loc, self.presence_prob, final_state]
+        for i in xrange(1, len(inpts)-1):
+            inpts[i] = inpts[i][::self.iw_samples]
+
+        baseline = baseline_module(*inpts)[..., tf.newaxis]
         baseline_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                           scope=baseline_module.variable_scope.name)
+
+        print 'constructed baseline'
         return baseline, baseline_vars
 
 
@@ -30,6 +37,7 @@ class ImportanceWeightedNVILEstimatorWithBaseline(ImportanceWeightedNVILEstimato
 
 
 class MNISTPriorMixin(AIRPriorMixin, LogLikelihoodMixin):
+    init_step_success_prob = 1. - 1e-7
 
     def _geom_success_prob(self, **kwargs):
 
@@ -37,13 +45,13 @@ class MNISTPriorMixin(AIRPriorMixin, LogLikelihoodMixin):
         steps_div = 1e4
         anneal_steps = 1e5
         global_step = tf.train.get_or_create_global_step()
-        steps_prior_success_prob = anneal_weight(1. - 1e-7, 1e-5, 'exp', global_step,
+        steps_prior_success_prob = anneal_weight(self.init_step_success_prob, 1e-5, 'exp', global_step,
                                                      anneal_steps, hold_init, steps_div)
         self.steps_prior_success_prob = steps_prior_success_prob
         return self.steps_prior_success_prob
 
 
-class AIRonMNIST(AIRModel, MNISTPriorMixin, KLMixin, LogLikelihoodMixin):
+class AIRonMNIST(AIRModel, MNISTPriorMixin, LogLikelihoodMixin):
     """Implements AIR for the MNIST dataset"""
 
     def __init__(self, obs, glimpse_size=(20, 20),

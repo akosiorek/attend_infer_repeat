@@ -1,8 +1,16 @@
+import functools
 import tensorflow as tf
 from tensorflow.contrib.distributions import Normal
 from tensorflow.contrib.distributions.python.ops.kullback_leibler import kl as _kl
 
 from prior import geometric_prior, tabular_kl
+
+
+def kl_by_sampling(q, p, samples=None):
+
+    if samples is None:
+        samples = q.sample()
+    return q.log_prob(samples) - tf.cast(p.log_prob(tf.cast(samples, p.dtype)), samples.dtype)
 
 
 class AIRPriorMixin(object):
@@ -63,6 +71,34 @@ class KLNumStepsNoGradMixin(KLNumStepsMixin):
     def _kl_num_steps(self):
         kls = super(KLNumStepsNoGradMixin, self)._kl_num_steps()
         return (tf.stop_gradient(kl) for kl in kls)
+
+
+class KLBySamplingMixin(object):
+    def _ordered_step_prob(self):
+        return tf.squeeze(self.presence)
+
+    def _kl_what(self):
+        what_kl = kl_by_sampling(self.what_posterior, self.what_prior, self.what)
+        what_kl = tf.reduce_sum(what_kl, -1) * self.ordered_step_prob
+        what_kl_per_sample = tf.reduce_sum(what_kl, -1)
+        kl_what = tf.reduce_mean(what_kl_per_sample)
+        return kl_what, what_kl_per_sample
+
+    def _kl_where(self):
+        ax = self.where.shape.ndims - 1
+        scale, shift = tf.split(self.where, 2, ax)
+        scale_kl = kl_by_sampling(self.scale_posterior, self.scale_prior, scale)
+        shift_kl = kl_by_sampling(self.shift_posterior, self.shift_prior, shift)
+
+        where_kl = tf.reduce_sum(scale_kl + shift_kl, -1) * self.ordered_step_prob
+        where_kl_per_sample = tf.reduce_sum(where_kl, -1)
+        kl_where = tf.reduce_mean(where_kl_per_sample)
+        return kl_where, where_kl_per_sample
+
+    def _kl_num_steps(self):
+        kl_num_steps_per_sample = kl_by_sampling(self.num_steps_posterior, self.num_step_prior, self.num_step_per_sample)
+        kl_num_steps = tf.reduce_mean(kl_num_steps_per_sample)
+        return kl_num_steps, kl_num_steps_per_sample
 
 
 class KLMixin(KLZMixin, KLNumStepsMixin):

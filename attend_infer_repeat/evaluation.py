@@ -118,7 +118,7 @@ def make_logger(air, sess, summary_writer, train_tensor, n_train_samples, test_t
         'reinforce_loss': 'reinforce_loss',
         'l2_loss': 'l2_loss',
         'proxy_loss': 'proxy_loss',
-        # 'imp_weight': 'importance_weight'
+        # 'imp_weight': 'num_steps_learning_signal'
     }
 
     skipped = False
