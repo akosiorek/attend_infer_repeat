@@ -76,4 +76,4 @@ class ModelTest(unittest.TestCase):
 
     def test_shapes(self):
         learning_signal_shape = self.air.num_steps_learning_signal.shape.as_list()
-        self.assertEqual(learning_signal_shape, [self.batch_size])
+        self.assertEqual(learning_signal_shape, [self.batch_size, 1])

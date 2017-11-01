@@ -95,12 +95,10 @@ class ImportanceWeightedNVILEstimator(EstimatorWithBaseline):
     def _make_nelbo(self):
         return self.nelbo
 
-    def _iw_resample(self, *args):
+    def _resample(self, *args):
         iw_sample_idx = self.iw_distrib.sample()
         iw_sample_idx += tf.range(self.batch_size) * self.iw_samples
         resampled = [tf.gather(arg, iw_sample_idx) for arg in args]
-        if len(resampled) == 1:
-            resampled = resampled[0]
 
         return resampled
 
@@ -110,14 +108,18 @@ class ImportanceWeightedNVILEstimator(EstimatorWithBaseline):
         importance_weights = tf.nn.softmax(per_sample_elbo, -1)
         self.iw_distrib = tf.contrib.distributions.Categorical(per_sample_elbo)
 
-        biggest = tf.reduce_max(per_sample_elbo, -1, keep_dims=True)
-        normalised = tf.exp(per_sample_elbo - biggest)
-        elbo = tf.log(tf.reduce_sum(normalised, -1, keep_dims=True)) + biggest - tf.log(float(self.iw_samples))
+        # tf.exp(tf.float32(89)) is inf, but if arg is 88 then it's not inf;
+        # similarly on the negative, exp of -90 is 0;
+        # when we subtract the max value, the dynamic range is about [-85, 0].
+        # If we subtract 78 from control, it becomes [-85, 78], which is almost twice as big.
+        control = tf.reduce_max(per_sample_elbo, -1, keep_dims=True) - 78.
+        normalised = tf.exp(per_sample_elbo - control)
+        elbo = tf.log(tf.reduce_sum(normalised, -1, keep_dims=True)) + control - tf.log(float(self.iw_samples))
         return elbo, importance_weights
 
-    def _make_train_step(self, make_opt, rec_loss, kl_div):
+    def _make_train_step(self, make_opt, rec_loss_per_sample, kl_div_per_sample):
 
-        negative_per_sample_elbo = rec_loss.per_sample + kl_div.per_sample
+        negative_per_sample_elbo = rec_loss_per_sample + kl_div_per_sample
         per_sample_elbo = -negative_per_sample_elbo
         iw_elbo_estimate, elbo_importance_weights = self._estimate_importance_weighted_elbo(per_sample_elbo)
 
@@ -133,7 +135,7 @@ class ImportanceWeightedNVILEstimator(EstimatorWithBaseline):
 
         posterior_num_steps_log_prob = self.num_steps_posterior.log_prob(self.num_step_per_sample)
         if self.importance_resample:
-            posterior_num_steps_log_prob = self._iw_resample(posterior_num_steps_log_prob)
+            posterior_num_steps_log_prob = self._resample(posterior_num_steps_log_prob)
             posterior_num_steps_log_prob = tf.reshape(posterior_num_steps_log_prob, (self.batch_size, 1))
             r_imp_weight = 1.
         else:

@@ -2,7 +2,7 @@ import functools
 
 import tensorflow as tf
 from tensorflow.contrib.distributions import Normal
-
+from tensorflow.python.util import nest
 
 import ops
 from cell import AIRCell
@@ -99,8 +99,6 @@ class AIRModel(object):
 
         self.final_state = state[-2]
         self.num_step_per_sample = tf.to_float(tf.reduce_sum(tf.squeeze(self.presence), -1))
-        self.num_step = tf.reduce_mean(self.num_step_per_sample)
-        tf.summary.scalar('num_step', self.num_step)
 
         self.output_distrib, self.num_steps_posterior, self.scale_posterior, self.shift_posterior, self.what_posterior\
             = self._make_posteriors()
@@ -153,28 +151,32 @@ class AIRModel(object):
             self.learning_rate = tf.Variable(learning_rate, name='learning_rate', trainable=False)
             make_opt = functools.partial(optimizer, **opt_kwargs)
 
-            # Reconstruction Loss, - \E_q [ p(x | z, n) ]
-            self.rec_loss = ops.Loss()
-            rec_loss, rec_loss_per_sample = self._log_likelihood()
-            tf.summary.scalar('rec', rec_loss)
-            self.rec_loss.add(rec_loss, rec_loss_per_sample)
+            # Reconstruction Loss: - \E_q [ p(x | z, n) ]
+            self.rec_loss_per_sample = self._log_likelihood()
 
-            # Prior Loss, KL[ q(z, n | x) || p(z, n) ]
-            self.kl_div = self._kl_divergence()
-            tf.summary.scalar('prior', self.kl_div.value)
+            # Prior Loss: KL[ q(z, n | x) || p(z, n) ]
+            self.kl_div_per_sample = self._kl_divergence()
 
         with tf.variable_scope('grad'):
-            self._train_step, self.gvs = self._make_train_step(make_opt, self.rec_loss, self.kl_div)
+            self._train_step, self.gvs = self._make_train_step(make_opt, self.rec_loss_per_sample, self.kl_div_per_sample)
 
         # Metrics
         gradient_summaries(self.gvs)
         if nums is not None:
             self.gt_num_steps = tf.squeeze(tf.reduce_sum(nums, 0))
-            self.effective_gt_num_steps = tf.tile(self.gt_num_steps, [self.iw_samples] + [1] * (self.gt_num_steps.shape.ndims - 1))
-            self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.effective_gt_num_steps, self.num_step_per_sample)))
+            num_step_per_sample = self.resample(self.num_step_per_sample)
+            self.num_step_accuracy = tf.reduce_mean(tf.to_float(tf.equal(self.gt_num_steps, num_step_per_sample)))
 
         # negative ELBO
         self.nelbo = self.make_nelbo()
+
+        # hack for reporting
+        with tf.variable_scope('loss'):
+            for name in ['kl_div', 'kl_num_steps', 'kl_where', 'kl_what', 'rec_loss', 'num_step']:
+                per_sample_name = name + '_per_sample'
+                per_sample = getattr(self, per_sample_name)
+                self._log_and_resample(per_sample, name)
+
         return self._train_step, tf.train.get_or_create_global_step()
 
     def make_nelbo(self):
@@ -182,6 +184,17 @@ class AIRModel(object):
             return self._make_nelbo()
         except AttributeError:
             return self.rec_loss.value + self.kl_div.value
+
+    def resample(self, *args):
+        res = args
+        try:
+            res = self._resample(*args)
+        except AttributeError:
+            pass
+
+        if nest.is_sequence(res) and len(res) == 1:
+            res = res[0]
+        return res
 
     def _l2_loss(self):
 
@@ -194,27 +207,30 @@ class AIRModel(object):
             tf.summary.scalar('l2', l2_loss)
         return l2_loss
 
+    def _log_and_resample(self, per_sample, name):
+        per_sample = self._resample(per_sample)
+        value = tf.reduce_mean(per_sample)
+        setattr(self, name, value)
+        tf.summary.scalar(name, value)
+
     def _kl_divergence(self):
         """Creates KL-divergence term of the loss"""
 
         with tf.variable_scope('KL_divergence'):
-            kl_divergence = ops.Loss()
+            kl_div = 0.
 
             with tf.variable_scope('num_steps'):
 
-                self.kl_num_steps, self.kl_num_steps_per_sample = self._kl_num_steps()
-                tf.summary.scalar('kl_num_steps', self.kl_num_steps)
-                kl_divergence.add(self.kl_num_steps, self.kl_num_steps_per_sample)
+                self.kl_num_steps_per_sample = self._kl_num_steps()
+                kl_div += self.kl_num_steps_per_sample
 
             self.ordered_step_prob = self._ordered_step_prob()
             with tf.variable_scope('what'):
-                self.kl_what, self.kl_what_per_sample = self._kl_what()
-                tf.summary.scalar('kl_what', self.kl_what)
-                kl_divergence.add(self.kl_what, self.kl_what_per_sample)
+                self.kl_what_per_sample = self._kl_what()
+                kl_div += self.kl_what_per_sample
 
             with tf.variable_scope('where'):
-                self.kl_where, self.kl_where_per_sample = self._kl_where()
-                tf.summary.scalar('kl_where', self.kl_where)
-                kl_divergence.add(self.kl_where, self.kl_where_per_sample)
+                self.kl_where_per_sample = self._kl_where()
+                kl_div += self.kl_where_per_sample
 
-        return kl_divergence
+        return kl_div

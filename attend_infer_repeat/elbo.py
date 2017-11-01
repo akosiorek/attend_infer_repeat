@@ -8,6 +8,8 @@ from prior import geometric_prior, tabular_kl
 
 def kl_by_sampling(q, p, samples=None):
 
+    print 'KL by sampling!'
+
     if samples is None:
         samples = q.sample()
     return q.log_prob(samples) - tf.cast(p.log_prob(tf.cast(samples, p.dtype)), samples.dtype)
@@ -46,16 +48,14 @@ class KLZMixin(object):
         what_kl = _kl(self.what_posterior, self.what_prior)
         what_kl = tf.reduce_sum(what_kl, -1) * self.ordered_step_prob
         what_kl_per_sample = tf.reduce_sum(what_kl, -1)
-        kl_what = tf.reduce_mean(what_kl_per_sample)
-        return kl_what, what_kl_per_sample
+        return what_kl_per_sample
 
     def _kl_where(self):
         scale_kl = _kl(self.scale_posterior, self.scale_prior)
         shift_kl = _kl(self.shift_posterior, self.shift_prior)
         where_kl = tf.reduce_sum(scale_kl + shift_kl, -1) * self.ordered_step_prob
         where_kl_per_sample = tf.reduce_sum(where_kl, -1)
-        kl_where = tf.reduce_mean(where_kl_per_sample)
-        return kl_where, where_kl_per_sample
+        return where_kl_per_sample
 
 
 class KLNumStepsMixin(object):
@@ -63,8 +63,7 @@ class KLNumStepsMixin(object):
         num_steps_posterior_prob = self.num_steps_posterior.prob()
         steps_kl = tabular_kl(num_steps_posterior_prob, self.num_step_prior_prob)
         kl_num_steps_per_sample = tf.squeeze(tf.reduce_sum(steps_kl, 1))
-        kl_num_steps = tf.reduce_mean(kl_num_steps_per_sample)
-        return kl_num_steps, kl_num_steps_per_sample
+        return kl_num_steps_per_sample
 
 
 class KLNumStepsNoGradMixin(KLNumStepsMixin):
@@ -81,8 +80,7 @@ class KLBySamplingMixin(object):
         what_kl = kl_by_sampling(self.what_posterior, self.what_prior, self.what)
         what_kl = tf.reduce_sum(what_kl, -1) * self.ordered_step_prob
         what_kl_per_sample = tf.reduce_sum(what_kl, -1)
-        kl_what = tf.reduce_mean(what_kl_per_sample)
-        return kl_what, what_kl_per_sample
+        return what_kl_per_sample
 
     def _kl_where(self):
         ax = self.where.shape.ndims - 1
@@ -92,13 +90,11 @@ class KLBySamplingMixin(object):
 
         where_kl = tf.reduce_sum(scale_kl + shift_kl, -1) * self.ordered_step_prob
         where_kl_per_sample = tf.reduce_sum(where_kl, -1)
-        kl_where = tf.reduce_mean(where_kl_per_sample)
-        return kl_where, where_kl_per_sample
+        return where_kl_per_sample
 
     def _kl_num_steps(self):
         kl_num_steps_per_sample = kl_by_sampling(self.num_steps_posterior, self.num_step_prior, self.num_step_per_sample)
-        kl_num_steps = tf.reduce_mean(kl_num_steps_per_sample)
-        return kl_num_steps, kl_num_steps_per_sample
+        return kl_num_steps_per_sample
 
 
 class KLMixin(KLZMixin, KLNumStepsMixin):
@@ -115,5 +111,4 @@ class LogLikelihoodMixin(object):
         # Reconstruction Loss, - \E_q [ p(x | z, n) ]
         rec_loss_per_sample = -self.output_distrib.log_prob(self.used_obs)
         rec_loss_per_sample = tf.reduce_sum(rec_loss_per_sample, axis=(1, 2))
-        rec_loss = tf.reduce_mean(rec_loss_per_sample)
-        return rec_loss, rec_loss_per_sample
+        return rec_loss_per_sample

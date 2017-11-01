@@ -103,10 +103,10 @@ def make_seq_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=5, 
 def make_logger(air, sess, summary_writer, train_tensor, n_train_samples, test_tensor, n_test_samples):
     exprs = {
         'nelbo': air.nelbo,
-        'rec_loss': air.rec_loss.value,
+        'rec_loss': air.rec_loss,
         'num_step_acc': air.num_step_accuracy,
         'num_step': air.num_step,
-        'kl_div': air.kl_div.value
+        'kl_div': air.kl_div
     }
 
     additional_exprs = {
