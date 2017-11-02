@@ -96,9 +96,8 @@ class ImportanceWeightedNVILEstimator(EstimatorWithBaseline):
         return self.nelbo
 
     def _resample(self, *args):
-        iw_sample_idx = self._iw_sample_index + tf.range(self.batch_size) * self.iw_samples
+        iw_sample_idx = self._iw_sample_index * self.batch_size + tf.range(self.batch_size)
         resampled = [tf.gather(arg, iw_sample_idx) for arg in args]
-
         return resampled
 
     def _estimate_importance_weighted_elbo(self, per_sample_elbo):
