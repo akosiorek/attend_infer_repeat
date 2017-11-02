@@ -131,13 +131,13 @@ class ImportanceWeightedNVILEstimator(EstimatorWithBaseline):
         # loss used as a proxy for gradient computation
         self.baseline, self.baseline_vars = self.make_baseline()
 
-        # TODO: run 4 full tests: with r_imp_weight set to 0 and not, with resampling and not
-
         posterior_num_steps_log_prob = self.num_steps_posterior.log_prob(self.num_step_per_sample)
         if self.importance_resample:
             posterior_num_steps_log_prob = self._resample(posterior_num_steps_log_prob)
             posterior_num_steps_log_prob = tf.reshape(posterior_num_steps_log_prob, (self.batch_size, 1))
-            r_imp_weight = 1.
+
+            # this could be constant e.g. 1, but the expectation of this is zero anyway, so there's no point in adding that.
+            r_imp_weight = 0.
         else:
             posterior_num_steps_log_prob = tf.reshape(posterior_num_steps_log_prob, (self.batch_size, self.iw_samples))
             r_imp_weight = self.elbo_importance_weights

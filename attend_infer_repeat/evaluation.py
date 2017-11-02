@@ -116,6 +116,8 @@ def make_logger(air, sess, summary_writer, train_tensor, n_train_samples, test_t
         'kl_num_steps': 'kl_num_steps',
         'kl_what': 'kl_what',
         'kl_where': 'kl_where',
+        'kl_scale': 'kl_scale',
+        'kl_shift': 'kl_shift',
         'baseline_loss': 'baseline_loss',
         'reinforce_loss': 'reinforce_loss',
         'l2_loss': 'l2_loss',
