@@ -172,10 +172,15 @@ class AIRModel(object):
 
         # hack for reporting
         with tf.variable_scope('loss'):
-            for name in ['kl_div', 'kl_num_steps', 'kl_where', 'kl_what', 'rec_loss', 'num_step']:
+            for name in ['kl_div', 'kl_num_steps', 'kl_where', 'kl_scale', 'kl_shift', 'kl_what', 'rec_loss', 'num_step']:
                 per_sample_name = name + '_per_sample'
-                per_sample = getattr(self, per_sample_name)
-                self._log_and_resample(per_sample, name)
+                per_sample = getattr(self, per_sample_name, None)
+                if per_sample is not None:
+                    self._log_and_resample(per_sample, name)
+
+        # hack for visualsiations
+        for name in 'canvas glimpse presence where what'.split():
+            setattr(self, 'resampled_' + name, self.resample(getattr(self, name)))
 
         return self._train_step, tf.train.get_or_create_global_step()
 
@@ -230,7 +235,7 @@ class AIRModel(object):
                 kl_div += self.kl_what_per_sample
 
             with tf.variable_scope('where'):
-                self.kl_where_per_sample = self._kl_where()
+                self.kl_where_per_sample, self.kl_scale_per_sample, self.kl_shift_per_sample = self._kl_where()
                 kl_div += self.kl_where_per_sample
 
         return kl_div

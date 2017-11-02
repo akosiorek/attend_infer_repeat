@@ -31,8 +31,10 @@ def rect_stn(ax, width, height, stn_params, c=None, line_width=3):
 def make_fig(air, sess, checkpoint_dir=None, global_step=None, n_samples=10, dpi=300):
     n_steps = air.max_steps
 
+    canvas = getattr(air, 'resampled_canvas', air.canvas)
+    canvas, glimpse, presence, where = [getattr(air, 'resampled_' + name, getattr(air, name)) for name in 'canvas glimpse presence where'.split()]
     xx, pred_canvas, pred_crop, prob, pres, w = sess.run(
-        [air.obs, air.canvas, air.glimpse, air.num_steps_posterior.prob()[..., 1:], air.presence, air.where])
+        [air.obs, canvas, glimpse, air.num_steps_posterior.prob()[..., 1:], presence, where])
     height, width = xx.shape[1:]
 
     bs = min(n_samples, air.batch_size)

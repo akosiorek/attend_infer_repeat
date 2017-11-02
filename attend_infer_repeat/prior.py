@@ -123,7 +123,9 @@ class NumStepsDistribution(object):
 
     def log_prob(self, samples):
         prob = self.prob(samples)
-        prob = clip_preserve(prob, 1e-32, prob)
+        
+        prob = clip_preserve(prob, 1e-16, prob)
+        #prob = clip_preserve(prob, 1e-32, prob)
         return tf.log(prob)
 
 

@@ -96,8 +96,7 @@ class ImportanceWeightedNVILEstimator(EstimatorWithBaseline):
         return self.nelbo
 
     def _resample(self, *args):
-        iw_sample_idx = self.iw_distrib.sample()
-        iw_sample_idx += tf.range(self.batch_size) * self.iw_samples
+        iw_sample_idx = self._iw_sample_index + tf.range(self.batch_size) * self.iw_samples
         resampled = [tf.gather(arg, iw_sample_idx) for arg in args]
 
         return resampled
@@ -107,6 +106,7 @@ class ImportanceWeightedNVILEstimator(EstimatorWithBaseline):
         per_sample_elbo = tf.reshape(per_sample_elbo, (self.batch_size, self.iw_samples))
         importance_weights = tf.nn.softmax(per_sample_elbo, -1)
         self.iw_distrib = tf.contrib.distributions.Categorical(per_sample_elbo)
+        self._iw_sample_index = self.iw_distrib.sample()
 
         # tf.exp(tf.float32(89)) is inf, but if arg is 88 then it's not inf;
         # similarly on the negative, exp of -90 is 0;

@@ -78,6 +78,7 @@ def init_checkpoint(checkpoint_dir, data_config, model_config, restart):
 
     else:
         # store flags
+        F = tf.flags.FLAGS
         _load_flags(model_config, data_config)
         flags = parse_flags()
         assert_all_flags_parsed()
@@ -143,6 +144,7 @@ def _load_flags(*config_paths):
     :return:
     """
     for config_path in config_paths:
+        print 'loading flags from', config_path
         _import_module(config_path)
 
 
@@ -150,11 +152,13 @@ def parse_flags():
     f = tf.flags.FLAGS
     args = sys.argv[1:]
 
+    old_flags = f.__dict__['__flags'].copy()
     # Parse the known flags from that list, or from the command
     # line otherwise.
     # pylint: disable=protected-access
     flags_passthrough = f._parse_flags(args=args)
     sys.argv[1:] = flags_passthrough
+    f.__dict__['__flags'].update(old_flags)
 
     # pylint: disable=protected-access
     return f.__flags

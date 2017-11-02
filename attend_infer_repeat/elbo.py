@@ -8,14 +8,14 @@ from prior import geometric_prior, tabular_kl
 
 def kl_by_sampling(q, p, samples=None):
 
-    print 'KL by sampling!'
-
     if samples is None:
         samples = q.sample()
     return q.log_prob(samples) - tf.cast(p.log_prob(tf.cast(samples, p.dtype)), samples.dtype)
 
 
 class AIRPriorMixin(object):
+
+    scale_prior_loc = .5
 
     def _geom_success_prob(self, **kwargs):
         return 1e-5
@@ -27,7 +27,7 @@ class AIRPriorMixin(object):
         """
 
         num_step_prior_prob, num_step_prior = geometric_prior(self._geom_success_prob(**kwargs), self.max_steps)
-        scale = Normal(.5, 1.)
+        scale = Normal(self.scale_prior_loc, 1.)
         shift = Normal(self.shift_posterior.loc, 1.)
         what = Normal(0., 1.)
         return num_step_prior_prob, num_step_prior, scale, shift, what
@@ -55,7 +55,7 @@ class KLZMixin(object):
         shift_kl = _kl(self.shift_posterior, self.shift_prior)
         where_kl = tf.reduce_sum(scale_kl + shift_kl, -1) * self.ordered_step_prob
         where_kl_per_sample = tf.reduce_sum(where_kl, -1)
-        return where_kl_per_sample
+        return where_kl_per_sample, None, None
 
 
 class KLNumStepsMixin(object):
@@ -88,9 +88,9 @@ class KLBySamplingMixin(object):
         scale_kl = kl_by_sampling(self.scale_posterior, self.scale_prior, scale)
         shift_kl = kl_by_sampling(self.shift_posterior, self.shift_prior, shift)
 
-        where_kl = tf.reduce_sum(scale_kl + shift_kl, -1) * self.ordered_step_prob
-        where_kl_per_sample = tf.reduce_sum(where_kl, -1)
-        return where_kl_per_sample
+        scale_kl, shift_kl = [tf.reduce_sum(i * self.ordered_step_prob[..., tf.newaxis], (-2, -1)) for i in (scale_kl, shift_kl)]
+        where_kl_per_sample = scale_kl + shift_kl
+        return where_kl_per_sample, scale_kl, shift_kl
 
     def _kl_num_steps(self):
         kl_num_steps_per_sample = kl_by_sampling(self.num_steps_posterior, self.num_step_prior, self.num_step_per_sample)
