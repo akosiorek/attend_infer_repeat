@@ -1,8 +1,8 @@
 import tensorflow as tf
 
 from attend_infer_repeat.mnist_model import (AIRonMNIST,
-                                             ImportanceWeightedNVILEstimatorWithBaseline,
                                              KLBySamplingMixin)
+from attend_infer_repeat.grad import VIMCOEstimator
 
 flags = tf.flags
 
@@ -23,11 +23,15 @@ def load(img, num):
     n_layers = 2
     n_hiddens = [n_hidden] * n_layers
 
-    class ConcreteAIR(AIRonMNIST, ImportanceWeightedNVILEstimatorWithBaseline, KLBySamplingMixin):
+    class AIRwithVIMCO(AIRonMNIST, VIMCOEstimator, KLBySamplingMixin):
         importance_resample = f.importance_resample
         use_r_imp_weight = f.use_r_imp_weight
 
-    air = ConcreteAIR(img,
+    optimizer = tf.train.AdamOptimizer
+    opt_kwargs = dict()
+
+
+    air = AIRwithVIMCO(img,
                       max_steps=f.n_steps_per_image,
                       inpt_encoder_hidden=n_hiddens,
                       glimpse_encoder_hidden=n_hiddens,

@@ -1,9 +1,10 @@
+import math
 import tensorflow as tf
 
 import ops
 
 
-class EstimatorWithBaseline(object):
+class EstimatorBaselineMixin(object):
 
     def make_baseline(self):
         res = None, []
@@ -22,7 +23,36 @@ class EstimatorWithBaseline(object):
         return train_step
 
 
-class NVILEstimator(EstimatorWithBaseline):
+class ImportanceWeightedMixin(object):
+    importance_resample = False
+
+    def _make_nelbo(self):
+        return self.nelbo
+
+    def _resample(self, *args):
+        iw_sample_idx = self._iw_sample_index * self.batch_size + tf.range(self.batch_size)
+        resampled = [tf.gather(arg, iw_sample_idx) for arg in args]
+
+        return resampled
+
+    def _estimate_importance_weighted_elbo(self, per_sample_elbo):
+
+        per_sample_elbo = tf.reshape(per_sample_elbo, (self.batch_size, self.iw_samples))
+        importance_weights = tf.nn.softmax(per_sample_elbo, -1)
+        self.iw_distrib = tf.contrib.distributions.Categorical(per_sample_elbo)
+        self._iw_sample_index = self.iw_distrib.sample()
+
+        # tf.exp(tf.float32(89)) is inf, but if arg is 88 then it's not inf;
+        # similarly on the negative, exp of -90 is 0;
+        # when we subtract the max value, the dynamic range is about [-85, 0].
+        # If we subtract 78 from control, it becomes [-85, 78], which is almost twice as big.
+        control = tf.reduce_max(per_sample_elbo, -1, keep_dims=True) - 78.
+        normalised = tf.exp(per_sample_elbo - control)
+        elbo = tf.log(tf.reduce_sum(normalised, -1, keep_dims=True)) + control - tf.log(float(self.iw_samples))
+        return elbo, importance_weights
+
+
+class NVILEstimator(EstimatorBaselineMixin):
 
     decay_rate = None
 
@@ -86,35 +116,10 @@ class NVILEstimator(EstimatorWithBaseline):
         return reinforce_loss
 
 
-class ImportanceWeightedNVILEstimator(EstimatorWithBaseline):
+class ImportanceWeightedNVILEstimator(ImportanceWeightedMixin, EstimatorBaselineMixin):
 
     decay_rate = None
-    importance_resample = False
     use_r_imp_weight = True
-
-    def _make_nelbo(self):
-        return self.nelbo
-
-    def _resample(self, *args):
-        iw_sample_idx = self._iw_sample_index * self.batch_size + tf.range(self.batch_size)
-        resampled = [tf.gather(arg, iw_sample_idx) for arg in args]
-        return resampled
-
-    def _estimate_importance_weighted_elbo(self, per_sample_elbo):
-
-        per_sample_elbo = tf.reshape(per_sample_elbo, (self.batch_size, self.iw_samples))
-        importance_weights = tf.nn.softmax(per_sample_elbo, -1)
-        self.iw_distrib = tf.contrib.distributions.Categorical(per_sample_elbo)
-        self._iw_sample_index = self.iw_distrib.sample()
-
-        # tf.exp(tf.float32(89)) is inf, but if arg is 88 then it's not inf;
-        # similarly on the negative, exp of -90 is 0;
-        # when we subtract the max value, the dynamic range is about [-85, 0].
-        # If we subtract 78 from control, it becomes [-85, 78], which is almost twice as big.
-        control = tf.reduce_max(per_sample_elbo, -1, keep_dims=True) - 78.
-        normalised = tf.exp(per_sample_elbo - control)
-        elbo = tf.log(tf.reduce_sum(normalised, -1, keep_dims=True)) + control - tf.log(float(self.iw_samples))
-        return elbo, importance_weights
 
     def _make_train_step(self, make_opt, rec_loss_per_sample, kl_div_per_sample):
 
@@ -200,12 +205,129 @@ class ImportanceWeightedNVILEstimator(EstimatorWithBaseline):
         return reinforce_loss
 
 
+class VIMCOEstimator(ImportanceWeightedMixin):
 
-class ResampledImportanceWeightedNVILEstimator(object):
-    # TODO: implement
-    pass
+    decay_rate = None
+    use_r_imp_weight = True
+
+    def _make_train_step(self, make_opt, rec_loss_per_sample, kl_div_per_sample):
 
 
-class VIMCOEstimator(object):
-    # TODO: implement
-    pass
+        # 1) estimate the per-sample elbo
+        negative_per_sample_elbo = rec_loss_per_sample + kl_div_per_sample
+        per_sample_elbo = -negative_per_sample_elbo
+
+        # 2) compute the multi-sample stochastic bound
+        iw_elbo_estimate, elbo_importance_weights = self._estimate_importance_weighted_elbo(per_sample_elbo)
+
+        self.elbo_importance_weights = tf.stop_gradient(elbo_importance_weights)
+
+        self.negative_weighted_per_sample_elbo = self.elbo_importance_weights \
+                                            * tf.reshape(negative_per_sample_elbo, (self.batch_size, self.iw_samples))
+
+        self.baseline = self._make_baseline(per_sample_elbo)
+
+        # loss used as a proxy for gradient computation
+        posterior_num_steps_log_prob = self.num_steps_posterior.log_prob(self.num_step_per_sample)
+        if self.importance_resample:
+            posterior_num_steps_log_prob = self._resample(posterior_num_steps_log_prob)
+            posterior_num_steps_log_prob = tf.reshape(posterior_num_steps_log_prob, (self.batch_size, 1))
+
+            # this could be constant e.g. 1, but the expectation of this is zero anyway,
+            #  so there's no point in adding that.
+            r_imp_weight = 0.
+        else:
+            posterior_num_steps_log_prob = tf.reshape(posterior_num_steps_log_prob, (self.batch_size, self.iw_samples))
+            r_imp_weight = self.elbo_importance_weights
+
+        if not self.use_r_imp_weight:
+            r_imp_weight = 0.
+
+        self.nelbo_per_sample = -tf.reshape(iw_elbo_estimate, (self.batch_size, 1))
+        num_steps_learning_signal = self.nelbo_per_sample
+        self.nelbo = tf.reduce_mean(self.nelbo_per_sample)
+        self.proxy_loss = self.nelbo + self._l2_loss()
+
+        self.reinforce_loss = self._reinforce(num_steps_learning_signal - r_imp_weight, posterior_num_steps_log_prob)
+        self.proxy_loss += self.reinforce_loss
+
+        opt = make_opt(self.learning_rate)
+        gvs = opt.compute_gradients(self.proxy_loss, var_list=self.model_vars)
+
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        global_step = tf.train.get_or_create_global_step()
+        with tf.control_dependencies(update_ops):
+            train_step = opt.apply_gradients(gvs, global_step=global_step)
+
+        return train_step, gvs
+
+    def _make_baseline(self, per_sample_elbo):
+        #####################
+
+        # compute the baseline
+        #########################
+        # 3) precompute the sum of per-sample bounds
+        reshaped_per_sample_elbo = tf.reshape(per_sample_elbo, (self.batch_size, self.iw_samples))
+        summed_per_sample_elbo = tf.reduce_sum(reshaped_per_sample_elbo, -1, keep_dims=True)
+
+        # 4) compute the baseline
+        all_but_one_average = (summed_per_sample_elbo - reshaped_per_sample_elbo) / (self.iw_samples - 1.)
+
+        control = tf.reduce_max(reshaped_per_sample_elbo, -1, keep_dims=True) - .78
+        # biggest = tf.reduce_max(reshaped_per_sample_elbo, -1, keep_dims=True)
+        # equal_to_biggest = tf.equal(reshaped_per_sample_elbo, biggest)
+        #
+        # # print 'q2b', equal_to_biggest
+        # altered = tf.where(equal_to_biggest, tf.ones_like(reshaped_per_sample_elbo) * -1e8, reshaped_per_sample_elbo)
+        # second_biggest = tf.reduce_max(altered, -1, keep_dims=True)
+        #
+        # alterantive = tf.maximum(second_biggest, all_but_one_average)
+        # control = tf.tile(biggest, (1, self.iw_samples))
+        # control = tf.where(equal_to_biggest, alterantive, control)
+
+        # self.second_biggest = second_biggest
+        # self.biggest = biggest
+        # self.alternative = alterantive
+        # self.reshaped_per_sample_elbo = reshaped_per_sample_elbo
+        # self.control = control
+        #
+        exped_per_sample_elbo = tf.exp(reshaped_per_sample_elbo - control)
+        summed_exped_per_sample_elbo = tf.reduce_sum(exped_per_sample_elbo, -1, keep_dims=True)
+        baseline = summed_exped_per_sample_elbo - exped_per_sample_elbo + tf.exp(all_but_one_average - control)
+
+
+
+        # the log-arg for the baseline can be zero when the elbo for that particular estimate is the max of estimates
+        # for all other samples; when this happenes, and when the differences are big, then
+        # `summed_exped_per_sample_elbo` takes the value of `exped_per_sample_elbo`; also then `all_but_one_average` is
+        # smaller than `control` (average is always less extreme) and all goes to hell.
+        #
+        # adding an eps for numerical stability biases the baseline, so it's better to just set the balue of the
+        #  baseline equal to the learnig signal for that sample, which effectively takes this sample away from.
+        baseline_is_zero = tf.equal(baseline, 0.)
+
+        baseline = tf.log(baseline) - math.log(self.iw_samples) + control
+        baseline = tf.where(baseline_is_zero, reshaped_per_sample_elbo, baseline)
+        return -baseline
+
+    def _reinforce(self, learning_signal, posterior_num_steps_log_prob):
+        """Implements REINFORCE for training the discrete probability distribution over number of steps and train-step
+         for the baseline"""
+
+        self.num_steps_learning_signal = learning_signal
+        if self.baseline is not None:
+            self.num_steps_learning_signal -= self.baseline
+
+        axes = range(len(self.num_steps_learning_signal.get_shape()))
+        imp_weight_mean, imp_weight_var = tf.nn.moments(self.num_steps_learning_signal, axes)
+        tf.summary.scalar('imp_weight_mean', imp_weight_mean)
+        tf.summary.scalar('imp_weight_var', imp_weight_var)
+        reinforce_loss_per_sample = tf.stop_gradient(self.num_steps_learning_signal) * posterior_num_steps_log_prob
+
+        shape = reinforce_loss_per_sample.shape.as_list()
+        assert len(shape) == 2 and shape[0] == self.batch_size and shape[1] in (1, self.iw_samples), 'shape is {}'.format(shape)
+
+        reinforce_loss = tf.reduce_mean(tf.reduce_sum(reinforce_loss_per_sample, -1))
+        tf.summary.scalar('reinforce_loss', reinforce_loss)
+
+        return reinforce_loss

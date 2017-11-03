@@ -5,6 +5,7 @@ import sys
 import re
 import shutil
 import json
+import subprocess
 
 import tensorflow as tf
 
@@ -78,10 +79,16 @@ def init_checkpoint(checkpoint_dir, data_config, model_config, restart):
 
     else:
         # store flags
-        F = tf.flags.FLAGS
         _load_flags(model_config, data_config)
         flags = parse_flags()
         assert_all_flags_parsed()
+
+        try:
+            flags['git_commit'] = get_git_revision_hash()
+        except subprocess.CalledProcessError:
+            # not in repo
+            pass
+
         json_store(flag_path, flags)
 
         # store configs
@@ -188,6 +195,10 @@ def assert_all_flags_parsed():
     not_parsed = [a for a in sys.argv[1:] if a.startswith('--')]
     if not_parsed:
         raise RuntimeError('Failed to parse following flags: {}'.format(not_parsed))
+
+
+def get_git_revision_hash():
+    return subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip()
 
 
 if __name__ == '__main__':
