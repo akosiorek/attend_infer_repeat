@@ -13,6 +13,7 @@ tf.flags.DEFINE_integer('n_iw_samples', 5, '')
 tf.flags.DEFINE_integer('n_steps_per_image', 3, '')
 tf.flags.DEFINE_boolean('importance_resample', False, '')
 tf.flags.DEFINE_boolean('use_r_imp_weight', True, '')
+tf.flags.DEFINE_boolean('vimco_per_sample_control', False, '')
 
 
 def load(img, num):
@@ -26,9 +27,7 @@ def load(img, num):
     class AIRwithVIMCO(AIRonMNIST, VIMCOEstimator, KLBySamplingMixin):
         importance_resample = f.importance_resample
         use_r_imp_weight = f.use_r_imp_weight
-
-    optimizer = tf.train.AdamOptimizer
-    opt_kwargs = dict()
+        vimco_per_sample_control = f.vimco_per_sample_control
 
 
     air = AIRwithVIMCO(img,

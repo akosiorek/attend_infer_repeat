@@ -206,6 +206,7 @@ class ImportanceWeightedNVILEstimator(ImportanceWeightedMixin, EstimatorBaseline
 
 
 class VIMCOEstimator(ImportanceWeightedMixin):
+    vimco_per_sample_control=False
 
     decay_rate = None
     use_r_imp_weight = True
@@ -273,28 +274,16 @@ class VIMCOEstimator(ImportanceWeightedMixin):
         # 4) compute the baseline
         all_but_one_average = (summed_per_sample_elbo - reshaped_per_sample_elbo) / (self.iw_samples - 1.)
 
-        control = tf.reduce_max(reshaped_per_sample_elbo, -1, keep_dims=True) - .78
-        # biggest = tf.reduce_max(reshaped_per_sample_elbo, -1, keep_dims=True)
-        # equal_to_biggest = tf.equal(reshaped_per_sample_elbo, biggest)
-        #
-        # # print 'q2b', equal_to_biggest
-        # altered = tf.where(equal_to_biggest, tf.ones_like(reshaped_per_sample_elbo) * -1e8, reshaped_per_sample_elbo)
-        # second_biggest = tf.reduce_max(altered, -1, keep_dims=True)
-        #
-        # alterantive = tf.maximum(second_biggest, all_but_one_average)
-        # control = tf.tile(biggest, (1, self.iw_samples))
-        # control = tf.where(equal_to_biggest, alterantive, control)
-
-        # self.second_biggest = second_biggest
-        # self.biggest = biggest
-        # self.alternative = alterantive
-        # self.reshaped_per_sample_elbo = reshaped_per_sample_elbo
-        # self.control = control
-        #
-        exped_per_sample_elbo = tf.exp(reshaped_per_sample_elbo - control)
-        summed_exped_per_sample_elbo = tf.reduce_sum(exped_per_sample_elbo, -1, keep_dims=True)
-        baseline = summed_exped_per_sample_elbo - exped_per_sample_elbo + tf.exp(all_but_one_average - control)
-
+        if self.vimco_per_sample_control:
+            diag = tf.matrix_diag(all_but_one_average - reshaped_per_sample_elbo)
+            baseline = reshaped_per_sample_elbo[..., tf.newaxis] + diag
+            control = tf.reduce_max(baseline, -2)
+            baseline = tf.reduce_sum(tf.exp(baseline - control[..., tf.newaxis]), -2)
+        else:
+            control = tf.reduce_max(reshaped_per_sample_elbo, -1, keep_dims=True) - .78
+            exped_per_sample_elbo = tf.exp(reshaped_per_sample_elbo - control)
+            summed_exped_per_sample_elbo = tf.reduce_sum(exped_per_sample_elbo, -1, keep_dims=True)
+            baseline = summed_exped_per_sample_elbo - exped_per_sample_elbo + tf.exp(all_but_one_average - control)
 
 
         # the log-arg for the baseline can be zero when the elbo for that particular estimate is the max of estimates
