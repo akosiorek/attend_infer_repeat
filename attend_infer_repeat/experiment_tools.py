@@ -172,6 +172,10 @@ def parse_flags():
 
 
 def _restore_flags(flags):
+    # TODO: this should still parse cli flags and use them in case of
+    # restarting a job from a new commit where flags where added.
+    # Right now it results in a runtime error because a flag might be request that hasn't been defined
+    # at the time of the first run.
     tf.flags.FLAGS.__dict__['__flags'] = flags
     tf.flags.FLAGS.__dict__['__parsed'] = True
 

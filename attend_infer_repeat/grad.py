@@ -291,7 +291,7 @@ class VIMCOEstimator(ImportanceWeightedMixin):
         # `summed_exped_per_sample_elbo` takes the value of `exped_per_sample_elbo`; also then `all_but_one_average` is
         # smaller than `control` (average is always less extreme) and all goes to hell.
         #
-        # adding an eps for numerical stability biases the baseline, so it's better to just set the balue of the
+        # adding an eps for numerical stability biases the baseline, so it's better to just set the value of the
         #  baseline equal to the learnig signal for that sample, which effectively takes this sample away from.
         baseline_is_zero = tf.equal(baseline, 0.)
 
