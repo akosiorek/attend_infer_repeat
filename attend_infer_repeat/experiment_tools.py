@@ -190,7 +190,6 @@ def print_flags():
 
 
 def set_flags(**flag_dict):
-
     for k, v in flag_dict.iteritems():
        sys.argv.append('--{}={}'.format(k, v))
 
@@ -203,6 +202,30 @@ def assert_all_flags_parsed():
 
 def get_git_revision_hash():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip()
+
+
+def set_flags_if_notebook(**flags_to_set):
+    if is_notebook() and flags_to_set:
+        print 'Setting the following flags:'
+        for k, v in flags_to_set.iteritems():
+            print '\t{}: {}'.format(k, v)
+
+        set_flags(**flags_to_set)
+
+
+def is_notebook():
+    notebook = False
+    try:
+        interpreter = get_ipython().__class__.__name__
+        if interpreter == 'ZMQInteractiveShell':
+            notebook = True
+        elif interpreter != 'TerminalInteractiveShell':
+            raise ValueError('Unknown interpreter name: {}'.format(interpreter))
+
+    except NameError:
+        # get_ipython is undefined => no notebook
+        pass
+    return notebook
 
 
 if __name__ == '__main__':
