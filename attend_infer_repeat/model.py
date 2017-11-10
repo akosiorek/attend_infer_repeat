@@ -55,6 +55,7 @@ class AIRModel(object):
         self.n_what = n_what
         self.output_std = output_std
         self.discrete_steps = discrete_steps
+        self.output_multiplier = output_multiplier
         self.iw_samples = iw_samples
         self.debug = debug
 
@@ -96,6 +97,7 @@ class AIRModel(object):
             setattr(self, name, output)
 
         self.canvas, self.glimpse = self.decoder(self.what, self.where, self.presence)
+        self.canvas *= self.output_multiplier
 
         self.final_state = state[-2]
         self.num_step_per_sample = tf.to_float(tf.reduce_sum(tf.squeeze(self.presence), -1))

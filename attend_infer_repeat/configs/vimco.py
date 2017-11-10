@@ -9,6 +9,9 @@ flags = tf.flags
 tf.flags.DEFINE_float('step_bias', 1., '')
 tf.flags.DEFINE_float('transform_var_bias', -3., '')
 tf.flags.DEFINE_float('learning_rate', 1e-5, '')
+tf.flags.DEFINE_float('output_multiplier', .25, '')
+tf.flags.DEFINE_float('init_step_success_prob', 1. - 1e-7, '')
+tf.flags.DEFINE_float('n_anneal_steps_loss', 1e3, '')
 tf.flags.DEFINE_integer('n_iw_samples', 5, '')
 tf.flags.DEFINE_integer('n_steps_per_image', 3, '')
 tf.flags.DEFINE_boolean('importance_resample', False, '')
@@ -28,7 +31,8 @@ def load(img, num):
         importance_resample = f.importance_resample
         use_r_imp_weight = f.use_r_imp_weight
         vimco_per_sample_control = f.vimco_per_sample_control
-
+        init_step_success_prob = f.init_step_success_prob
+        n_anneal_steps_loss = f.n_anneal_steps_loss
 
     air = AIRwithVIMCO(img,
                       max_steps=f.n_steps_per_image,
@@ -41,7 +45,8 @@ def load(img, num):
                       transform_var_bias=f.transform_var_bias,
                       step_bias=f.step_bias,
                       discrete_steps=True,
-                      iw_samples=f.n_iw_samples)
+                      iw_samples=f.n_iw_samples,
+                      output_multiplier=f.output_multiplier)
 
     train_step, global_step = air.train_step(f.learning_rate, nums=num)
 

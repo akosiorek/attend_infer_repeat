@@ -210,6 +210,7 @@ class VIMCOEstimator(ImportanceWeightedMixin):
 
     decay_rate = None
     use_r_imp_weight = True
+    n_anneal_steps_loss = 1.
 
     def _make_train_step(self, make_opt, rec_loss_per_sample, kl_div_per_sample):
         assert self.iw_samples >= 2, 'VIMCO requires at least two importance samples'
@@ -310,12 +311,17 @@ class VIMCOEstimator(ImportanceWeightedMixin):
         tf.summary.scalar('imp_weight_mean', imp_weight_mean)
         tf.summary.scalar('imp_weight_var', imp_weight_var)
         reinforce_loss_per_sample = tf.stop_gradient(self.num_steps_learning_signal) * posterior_num_steps_log_prob
-
+    
         shape = reinforce_loss_per_sample.shape.as_list()
         assert len(shape) == 2 and shape[0] == self.batch_size and shape[1] in (1, self.iw_samples), 'shape is {}'.format(shape)
 
         reinforce_loss = tf.reduce_mean(tf.reduce_sum(reinforce_loss_per_sample, -1))
         tf.summary.scalar('reinforce_loss', reinforce_loss)
+
+        if self.n_anneal_steps_loss > 1.:
+            global_step = tf.to_float(tf.train.get_or_create_global_step())
+            anneal_weight = tf.minimum(global_step / self.n_anneal_steps_loss, 1.)
+            reinforce_loss *= anneal_weight
 
         return reinforce_loss
 
@@ -334,7 +340,7 @@ class VIMCOEstimator(ImportanceWeightedMixin):
     def _exped_baseline_and_control(reshaped_per_sample_elbo, all_but_one_average):
 
         baseline = VIMCOEstimator._raw_baseline(reshaped_per_sample_elbo, all_but_one_average)
-        control = VIMCOEstimator._control(baseline)
+        control = VIMCOEstimator._control(baseline) - 78.
 
         baseline = tf.reduce_sum(tf.exp(baseline - control[..., tf.newaxis, :]), -2)
         return baseline, control
