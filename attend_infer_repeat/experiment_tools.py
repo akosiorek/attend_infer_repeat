@@ -6,11 +6,12 @@ import re
 import shutil
 import json
 import subprocess
-
 import tensorflow as tf
 
 
 FLAG_FILE = 'flags.json'
+
+# TODO: docs
 
 
 def json_store(path, data):

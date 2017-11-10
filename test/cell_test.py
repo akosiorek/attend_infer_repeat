@@ -12,7 +12,7 @@ def make_modules():
         transition=snt.GRU(3),
         input_encoder=(lambda: Encoder(5)),
         glimpse_encoder=(lambda: Encoder(7)),
-        transform_estimator=(lambda x: StochasticTransformParam(13, x)),
+        transform_estimator=(lambda: StochasticTransformParam(13)),
         steps_predictor=(lambda: StepsPredictor(17))
     )
 

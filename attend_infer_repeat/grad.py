@@ -212,6 +212,7 @@ class VIMCOEstimator(ImportanceWeightedMixin):
     use_r_imp_weight = True
 
     def _make_train_step(self, make_opt, rec_loss_per_sample, kl_div_per_sample):
+        assert self.iw_samples >= 2, 'VIMCO requires at least two importance samples'
 
 
         # 1) estimate the per-sample elbo
@@ -275,10 +276,7 @@ class VIMCOEstimator(ImportanceWeightedMixin):
         all_but_one_average = (summed_per_sample_elbo - reshaped_per_sample_elbo) / (self.iw_samples - 1.)
 
         if self.vimco_per_sample_control:
-            diag = tf.matrix_diag(all_but_one_average - reshaped_per_sample_elbo)
-            baseline = reshaped_per_sample_elbo[..., tf.newaxis] + diag
-            control = tf.reduce_max(baseline, -2)
-            baseline = tf.reduce_sum(tf.exp(baseline - control[..., tf.newaxis]), -2)
+            baseline, control = self._exped_baseline_and_control(reshaped_per_sample_elbo, all_but_one_average)
         else:
             control = tf.reduce_max(reshaped_per_sample_elbo, -1, keep_dims=True) - .78
             exped_per_sample_elbo = tf.exp(reshaped_per_sample_elbo - control)
@@ -320,3 +318,23 @@ class VIMCOEstimator(ImportanceWeightedMixin):
         tf.summary.scalar('reinforce_loss', reinforce_loss)
 
         return reinforce_loss
+
+    @staticmethod
+    def _raw_baseline(reshaped_per_sample_elbo, all_but_one_average):
+        diag = tf.matrix_diag(all_but_one_average - reshaped_per_sample_elbo)
+        baseline = reshaped_per_sample_elbo[..., tf.newaxis] + diag
+        return baseline
+
+    @staticmethod
+    def _control(raw_baseline):
+        control = tf.reduce_max(raw_baseline, -2)
+        return control
+
+    @staticmethod
+    def _exped_baseline_and_control(reshaped_per_sample_elbo, all_but_one_average):
+
+        baseline = VIMCOEstimator._raw_baseline(reshaped_per_sample_elbo, all_but_one_average)
+        control = VIMCOEstimator._control(baseline)
+
+        baseline = tf.reduce_sum(tf.exp(baseline - control[..., tf.newaxis, :]), -2)
+        return baseline, control

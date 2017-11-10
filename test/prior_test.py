@@ -18,7 +18,9 @@ class GeometricPriorTest(TFTestBase):
         # prob = 1e-7
         n_steps = 10
         expected = (1. - prob) * prob ** np.arange(n_steps + 1)
-        p = geometric_prior(prob, n_steps)
+        p, distrib = geometric_prior(prob, n_steps)
+
+        self.assertTrue(isinstance(distrib, tf.contrib.distributions.Geometric))
         p = self.eval(p)
         print p, p.sum()
         assert_array_almost_equal(p, expected)
@@ -146,7 +148,7 @@ class NumStepsKLTest(TFTestBase):
     def setUpClass(cls):
         super(NumStepsKLTest, cls).setUpClass()
 
-        cls.prior = geometric_prior(.005, 3)
+        cls.prior, _ = geometric_prior(.005, 3)
 
         cls.posterior = bernoulli_to_modified_geometric(cls.x)
         cls.posterior_grad = tf.gradients(cls.posterior, cls.x)
