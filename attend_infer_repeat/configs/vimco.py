@@ -3,6 +3,7 @@ import tensorflow as tf
 from attend_infer_repeat.mnist_model import (AIRonMNIST,
                                              KLBySamplingMixin)
 from attend_infer_repeat.grad import VIMCOEstimator
+from attend_infer_repeat.experiment_tools import optimizer_from_string
 
 flags = tf.flags
 
@@ -17,6 +18,7 @@ tf.flags.DEFINE_integer('n_steps_per_image', 3, '')
 tf.flags.DEFINE_boolean('importance_resample', False, '')
 tf.flags.DEFINE_boolean('use_r_imp_weight', True, '')
 tf.flags.DEFINE_boolean('vimco_per_sample_control', False, '')
+tf.flags.DEFINE_string('opt', '', '')
 
 
 def load(img, num):
@@ -48,6 +50,12 @@ def load(img, num):
                       iw_samples=f.n_iw_samples,
                       output_multiplier=f.output_multiplier)
 
-    train_step, global_step = air.train_step(f.learning_rate, nums=num)
+    kwargs = dict(learning_rate=f.learning_rate, nums=num)
+    if f.opt:
+        opt, opt_kwargs = optimizer_from_string(f.opt, build=False)
+        kwargs['optimizer'] = opt
+        kwargs['opt_kwargs'] = opt_kwargs
+
+    train_step, global_step = air.train_step(**kwargs)
 
     return air, train_step, global_step

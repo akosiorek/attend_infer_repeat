@@ -229,6 +229,29 @@ def is_notebook():
     return notebook
 
 
+import re
+
+
+def optimizer_from_string(opt_string, build=True):
+
+
+    res = re.search(r'([a-z|A-Z]+)\(?(.*)\)?', opt_string).groups()
+    opt_name = res[0]
+
+    opt_args = ''
+    if len(res) > 1:
+        opt_args = res[1]
+
+    opt_args = eval('dict({})'.format(opt_args))
+    opt = getattr(tf.train, '{}Optimizer'.format(opt_name))
+
+    if not build:
+        opt = opt, opt_args
+    else:
+        opt = opt(**opt_args)
+    return opt
+
+
 if __name__ == '__main__':
 
     import tensorflow as tf
@@ -264,4 +287,3 @@ if __name__ == '__main__':
     # air, train_step, global_step = load(model_config, img=data_dict.train_img, num=data_dict.train_num)
     #
     # print air
-
