@@ -8,7 +8,6 @@ import json
 import subprocess
 import tensorflow as tf
 
-
 FLAG_FILE = 'flags.json'
 
 # TODO: docs
@@ -71,8 +70,14 @@ def init_checkpoint(checkpoint_dir, data_config, model_config, restart):
 
     flag_path = os.path.join(experiment_folder, FLAG_FILE)
     restart_checkpoint = None
+
+    _load_flags(model_config, data_config)
+    flags = parse_flags()
+    assert_all_flags_parsed()
+
     if restart:
-        flags = json_load(flag_path)
+        restored_flags = json_load(flag_path)
+        flags.update(restored_flags)
         _restore_flags(flags)
         model_files = find_model_files(experiment_folder)
         if model_files:
@@ -80,10 +85,6 @@ def init_checkpoint(checkpoint_dir, data_config, model_config, restart):
 
     else:
         # store flags
-        _load_flags(model_config, data_config)
-        flags = parse_flags()
-        assert_all_flags_parsed()
-
         try:
             flags['git_commit'] = get_git_revision_hash()
         except subprocess.CalledProcessError:
@@ -173,10 +174,6 @@ def parse_flags():
 
 
 def _restore_flags(flags):
-    # TODO: this should still parse cli flags and use them in case of
-    # restarting a job from a new commit where flags where added.
-    # Right now it results in a runtime error because a flag might be request that hasn't been defined
-    # at the time of the first run.
     tf.flags.FLAGS.__dict__['__flags'] = flags
     tf.flags.FLAGS.__dict__['__parsed'] = True
 
@@ -229,9 +226,6 @@ def is_notebook():
     return notebook
 
 
-import re
-
-
 def optimizer_from_string(opt_string, build=True):
 
 
@@ -250,6 +244,12 @@ def optimizer_from_string(opt_string, build=True):
     else:
         opt = opt(**opt_args)
     return opt
+
+def get_session():
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    sess = tf.Session(config=config)
+    return sess
 
 
 if __name__ == '__main__':

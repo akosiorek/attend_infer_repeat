@@ -135,3 +135,8 @@ def sample_from_tensor(tensor, idx):
     samples = tf.reshape(samples_flat, batch_shape)
 
     return samples
+
+def expand_around_zero(x, eps):
+    gaus = tf.exp(-0.5 * x ** 2)
+    sign = tf.to_float(tf.greater_equal(x, 0.))
+    return x + (2 * sign - 1.) * eps * gaus 

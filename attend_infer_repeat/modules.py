@@ -8,6 +8,7 @@ from tensorflow.python.util import nest
 import sonnet as snt
 
 from neural import MLP
+from ops import expand_around_zero
 
 
 class ParametrisedGaussian(snt.AbstractModule):
@@ -106,6 +107,10 @@ class SpatialTransformer(snt.AbstractModule):
 
         axis = transform_params.shape.ndims - 1
         sx, sy, tx, ty = tf.split(transform_params, 4, axis=axis)
+
+        sx = expand_around_zero(sx, 1e-4)
+        sy = expand_around_zero(sy, 1e-4)
+
         transform_params = tf.concat([sx, tx, sy, ty], -1)
 
         if len(img.get_shape()) == 3:

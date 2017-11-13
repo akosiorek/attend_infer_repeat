@@ -16,6 +16,8 @@ def kl_by_sampling(q, p, samples=None):
 class AIRPriorMixin(object):
 
     scale_prior_loc = .5
+    what_prior_scale = 1.
+    where_prior_scale = 1.
 
     def _geom_success_prob(self, **kwargs):
         return 1e-5
@@ -27,9 +29,9 @@ class AIRPriorMixin(object):
         """
 
         num_step_prior_prob, num_step_prior = geometric_prior(self._geom_success_prob(**kwargs), self.max_steps)
-        scale = Normal(self.scale_prior_loc, 1.)
-        shift = Normal(self.shift_posterior.loc, 1.)
-        what = Normal(0., 1.)
+        scale = Normal(self.scale_prior_loc, self.where_prior_scale)
+        shift = Normal(self.shift_posterior.loc, self.where_prior_scale)
+        what = Normal(0., self.what_prior_scale)
         return num_step_prior_prob, num_step_prior, scale, shift, what
 
 

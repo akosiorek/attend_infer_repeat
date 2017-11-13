@@ -62,11 +62,13 @@ class AIRonMNIST(AIRModel, MNISTPriorMixin, LogLikelihoodMixin):
                  steps_pred_hidden=[50]*1,
                  baseline_hidden=[256, 128]*1,
                  transform_var_bias=-2.,
+                 min_glimpse_size=0.,
                  step_bias=0.,
                  *args, **kwargs):
 
         self.transform_var_bias = tf.Variable(transform_var_bias, trainable=False, dtype=tf.float32,
                                                        name='transform_var_bias')
+        self.min_glimpse_size = min_glimpse_size
         self.step_bias = tf.Variable(step_bias, trainable=False, dtype=tf.float32, name='step_bias')
         self.baseline_hidden = baseline_hidden
 
@@ -80,7 +82,7 @@ class AIRonMNIST(AIRModel, MNISTPriorMixin, LogLikelihoodMixin):
             glimpse_encoder=partial(Encoder, glimpse_encoder_hidden),
             glimpse_decoder=partial(Decoder, glimpse_decoder_hidden),
             transform_estimator=partial(StochasticTransformParam, transform_estimator_hidden,
-                                      scale_bias=self.transform_var_bias),
+                                      scale_bias=self.transform_var_bias, min_glimpse_size=self.min_glimpse_size),
             steps_predictor=partial(StepsPredictor, steps_pred_hidden, self.step_bias),
             output_std=.3,
             **kwargs

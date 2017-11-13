@@ -292,10 +292,10 @@ class VIMCOEstimator(ImportanceWeightedMixin):
         #
         # adding an eps for numerical stability biases the baseline, so it's better to just set the value of the
         #  baseline equal to the learnig signal for that sample, which effectively takes this sample away from.
-        baseline_is_zero = tf.equal(baseline, 0.)
+        #baseline_is_zero = tf.equal(baseline, 0.)
 
         baseline = tf.log(baseline) - math.log(self.iw_samples) + control
-        baseline = tf.where(baseline_is_zero, reshaped_per_sample_elbo, baseline)
+        #baseline = tf.where(baseline_is_zero, reshaped_per_sample_elbo, baseline)
         return -baseline
 
     def _reinforce(self, learning_signal, posterior_num_steps_log_prob):

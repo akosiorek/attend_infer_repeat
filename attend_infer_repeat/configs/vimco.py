@@ -13,6 +13,8 @@ tf.flags.DEFINE_float('learning_rate', 1e-5, '')
 tf.flags.DEFINE_float('output_multiplier', .25, '')
 tf.flags.DEFINE_float('init_step_success_prob', 1. - 1e-7, '')
 tf.flags.DEFINE_float('n_anneal_steps_loss', 1e3, '')
+tf.flags.DEFINE_float('min_glimpse_size', 0., '')
+tf.flags.DEFINE_float('where_prior_scale', 1., '')
 tf.flags.DEFINE_integer('n_iw_samples', 5, '')
 tf.flags.DEFINE_integer('n_steps_per_image', 3, '')
 tf.flags.DEFINE_boolean('importance_resample', False, '')
@@ -35,6 +37,7 @@ def load(img, num):
         vimco_per_sample_control = f.vimco_per_sample_control
         init_step_success_prob = f.init_step_success_prob
         n_anneal_steps_loss = f.n_anneal_steps_loss
+        where_prior_scale = f.where_prior_scale
 
     air = AIRwithVIMCO(img,
                       max_steps=f.n_steps_per_image,
@@ -45,6 +48,7 @@ def load(img, num):
                       steps_pred_hidden=[128, 64],
                       baseline_hidden=[256, 128],
                       transform_var_bias=f.transform_var_bias,
+                      min_glimpse_size=f.min_glimpse_size,
                       step_bias=f.step_bias,
                       discrete_steps=True,
                       iw_samples=f.n_iw_samples,
