@@ -236,17 +236,22 @@ class VIMCOEstimator(ImportanceWeightedMixin):
             posterior_num_steps_log_prob = self._resample(posterior_num_steps_log_prob)
             posterior_num_steps_log_prob = tf.reshape(posterior_num_steps_log_prob, (self.batch_size, 1))
 
+            baseline = tf.reshape(self.baseline, tf.shape(negative_per_sample_elbo))
+            nelbo_per_sample, baseline = self._resample(negative_per_sample_elbo, baseline)
+            self.nelbo_per_sample = tf.reshape(nelbo_per_sample, (self.batch_size, 1))
+            self.baseline = tf.reshape(baseline, (self.batch_size, 1))
+
             # this could be constant e.g. 1, but the expectation of this is zero anyway,
             #  so there's no point in adding that.
             r_imp_weight = 0.
         else:
             posterior_num_steps_log_prob = tf.reshape(posterior_num_steps_log_prob, (self.batch_size, self.iw_samples))
             r_imp_weight = self.elbo_importance_weights
+            self.nelbo_per_sample = -tf.reshape(iw_elbo_estimate, (self.batch_size, 1))
 
         if not self.use_r_imp_weight:
             r_imp_weight = 0.
 
-        self.nelbo_per_sample = -tf.reshape(iw_elbo_estimate, (self.batch_size, 1))
         num_steps_learning_signal = self.nelbo_per_sample
         self.nelbo = tf.reduce_mean(self.nelbo_per_sample)
         self.proxy_loss = self.nelbo + self._l2_loss()
@@ -304,6 +309,8 @@ class VIMCOEstimator(ImportanceWeightedMixin):
 
         self.num_steps_learning_signal = learning_signal
         if self.baseline is not None:
+            print 'learn signal', self.num_steps_learning_signal
+            print 'baseline', self.baseline
             self.num_steps_learning_signal -= self.baseline
 
         axes = range(len(self.num_steps_learning_signal.get_shape()))
